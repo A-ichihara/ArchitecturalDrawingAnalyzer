@@ -11,7 +11,8 @@ from typing import Optional
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QToolBar, QStatusBar, QFileDialog, QMessageBox,
-    QLabel, QSizePolicy, QDockWidget, QTextEdit, QPushButton
+    QLabel, QSizePolicy, QDockWidget, QTextEdit, QPushButton,
+    QTabWidget
 )
 from PySide6.QtCore import Qt, QThread, Signal, QObject
 from PySide6.QtGui import QAction, QIcon, QKeySequence, QColor
@@ -20,7 +21,12 @@ from core.drawing_viewer.scene import DrawingScene
 from core.drawing_viewer.view import DrawingView
 from core.drawing_viewer.renderers import DxfRenderer
 from core.parser.dxf_parser import DxfParser
-from core.models.drawing import Drawing
+from core.models.drawing import Drawing, DrawingElement
+from core.analyzer.drawing_analyzer import DrawingAnalyzer
+
+from ui.panels.layer_panel import LayerPanel
+from ui.panels.property_panel import PropertyPanel
+from ui.panels.element_tree import ElementTreePanel
 
 logger = logging.getLogger(__name__)
 
@@ -57,13 +63,15 @@ class MainWindow(QMainWindow):
     
     構成:
         - ツールバー: [DXFを開く] [全体表示] [ズームイン] [ズームアウト]
+        - 左ドック: [レイヤー一覧] / [要素ツリー] タブ
         - 中央: DrawingView（DXF図面表示エリア）
-        - 下部ステータスバー: ファイル名・状態・ズーム率
-        - 右ドック: ログ表示エリア（開発確認用）
+        - 右ドック: [プロパティ]
+        - 下部ステータスバー: ファイル名・状態・座標・要素数・ズーム率
+        - 下部ドック: ログ表示エリア
     """
 
     APP_TITLE = "建築図面解析・設備設計支援システム"
-    VERSION = "Phase 1"
+    VERSION = "Phase 2"
 
     def __init__(self):
         super().__init__()
@@ -81,7 +89,7 @@ class MainWindow(QMainWindow):
 
     def _setup_ui(self) -> None:
         self.setWindowTitle(self.APP_TITLE)
-        self.resize(1280, 800)
+        self.resize(1400, 850)
         self._apply_stylesheet()
 
         # シーン＋ビュー
@@ -95,14 +103,22 @@ class MainWindow(QMainWindow):
         # 中央ウィジェット
         self.setCentralWidget(self._view)
 
+        # ドックパネル（3ペイン構成）
+        self._setup_side_docks()
+
         # ステータスバー
         self._setup_statusbar()
 
         # ログドック
         self._setup_log_dock()
 
-        # ズーム変化シグナル接続
+        # シグナル接続
         self._view.zoom_changed.connect(self._on_zoom_changed)
+        self._view.mouse_world_pos_changed.connect(self._on_mouse_world_pos_changed)
+        self._scene.selectionChanged.connect(self._on_scene_selection_changed)
+
+        self._layer_panel.layer_visibility_changed.connect(self._on_layer_visibility_changed)
+        self._element_tree_panel.element_selected.connect(self._on_tree_element_selected)
 
     def _setup_toolbar(self) -> None:
         toolbar = QToolBar("メインツールバー", self)
@@ -140,17 +156,42 @@ class MainWindow(QMainWindow):
         act_zoom_out.triggered.connect(self._view.zoom_out)
         toolbar.addAction(act_zoom_out)
 
+    def _setup_side_docks(self) -> None:
+        """左右のサイドドックパネルを初期化構築する。"""
+        # 左ドック (レイヤー + 要素ツリー)
+        self._left_dock = QDockWidget("構造解析", self)
+        self._left_dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
+        
+        tab_left = QTabWidget()
+        self._layer_panel = LayerPanel()
+        self._element_tree_panel = ElementTreePanel()
+
+        tab_left.addTab(self._layer_panel, "レイヤー")
+        tab_left.addTab(self._element_tree_panel, "要素ツリー")
+        self._left_dock.setWidget(tab_left)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._left_dock)
+
+        # 右ドック (プロパティ)
+        self._right_dock = QDockWidget("要素プロパティ", self)
+        self._right_dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
+        
+        self._property_panel = PropertyPanel()
+        self._right_dock.setWidget(self._property_panel)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._right_dock)
+
     def _setup_statusbar(self) -> None:
         statusbar = QStatusBar()
         self.setStatusBar(statusbar)
 
         self._label_file = QLabel("ファイル：（未選択）")
         self._label_status = QLabel("状態：待機中")
+        self._label_coords = QLabel("座標：(0.00, 0.00) mm")
         self._label_elements = QLabel("")
         self._label_zoom = QLabel("ズーム：100%")
 
         statusbar.addWidget(self._label_file, 2)
         statusbar.addWidget(self._label_status, 2)
+        statusbar.addWidget(self._label_coords, 2)
         statusbar.addWidget(self._label_elements, 1)
         statusbar.addPermanentWidget(self._label_zoom)
 
@@ -205,11 +246,26 @@ class MainWindow(QMainWindow):
             }
             QDockWidget {
                 color: #a9b1d6;
-                titlebar-close-icon: url(none.png);
             }
             QDockWidget::title {
                 background: #16213e;
                 padding: 4px;
+                font-weight: bold;
+            }
+            QTabWidget::pane {
+                border: 1px solid #0f3460;
+            }
+            QTabBar::tab {
+                background: #16213e;
+                color: #a9b1d6;
+                padding: 6px 12px;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+            }
+            QTabBar::tab:selected {
+                background: #1a1b2e;
+                color: #7aa2f7;
+                font-weight: bold;
             }
         """)
 
@@ -257,19 +313,27 @@ class MainWindow(QMainWindow):
         # レンダリング
         self._renderer.render(drawing, self._scene)
 
+        # 構造解析
+        stats = DrawingAnalyzer.analyze(drawing)
+
+        # パネルの更新
+        self._layer_panel.set_layers(stats.layers)
+        self._element_tree_panel.set_drawing(drawing)
+        self._property_panel.clear()
+
         # ビューを図面全体に合わせる
         self._fit_view()
 
         # ステータス更新
-        elem_count = len(drawing.elements)
         self._label_status.setText("状態：表示完了")
-        self._label_elements.setText(f"要素数：{elem_count}")
+        self._label_elements.setText(f"要素数：{stats.total_elements}")
 
         meta = getattr(drawing, "_meta", {})
         dxf_ver = meta.get("dxf_version", "不明")
         unsupported = meta.get("unsupported_types", {})
 
-        self._log("info", f"読み込み完了: {elem_count} 要素 / DXFバージョン: {dxf_ver}")
+        self._log("info", f"読み込み完了: {stats.total_elements} 要素 / レイヤー数: {stats.layer_count} / DXFバージョン: {dxf_ver}")
+        self._log("info", f"要素内訳: {stats.by_type}")
         if unsupported:
             self._log("warn", f"未対応エンティティ（スキップ）: {unsupported}")
 
@@ -293,6 +357,42 @@ class MainWindow(QMainWindow):
     def _on_zoom_changed(self, zoom: float) -> None:
         """ズーム倍率変更時にステータスバーを更新する。"""
         self._label_zoom.setText(f"ズーム：{zoom * 100:.1f}%")
+
+    def _on_mouse_world_pos_changed(self, x: float, y: float) -> None:
+        """マウス移動時にワールド座標表示を更新する。"""
+        self._label_coords.setText(f"座標：({x:.2f}, {y:.2f}) mm")
+
+    def _on_layer_visibility_changed(self, layer_name: str, visible: bool) -> None:
+        """レイヤーパネルで表示トグルが変更されたときの処理。"""
+        self._renderer.set_layer_visible(layer_name, visible)
+
+    def _on_scene_selection_changed(self) -> None:
+        """ビュー上で要素の選択状態が変更されたときの処理。"""
+        selected_items = self._scene.selectedItems()
+        if not selected_items or self._drawing is None:
+            self._property_panel.clear()
+            return
+
+        item = selected_items[0]
+        element_id = item.data(Qt.ItemDataRole.UserRole)
+        if element_id:
+            elem = self._drawing.get_element_by_id(element_id)
+            self._property_panel.show_element(elem)
+
+    def _on_tree_element_selected(self, element_id: str) -> None:
+        """ツリーパネルで要素が選択されたときの処理。"""
+        if self._drawing is None:
+            return
+
+        elem = self._drawing.get_element_by_id(element_id)
+        self._property_panel.show_element(elem)
+
+        # シーン上の該当アイテムを選択状態にする
+        self._scene.clearSelection()
+        for item in self._scene.items():
+            if item.data(Qt.ItemDataRole.UserRole) == element_id:
+                item.setSelected(True)
+                break
 
     # ------------------------------------------------------------------
     # ロギング
@@ -321,6 +421,7 @@ class MainWindow(QMainWindow):
         if filename:
             title += f" | {filename}"
         self.setWindowTitle(title)
+
 
 
 # ---------------------------------------------------------------------------

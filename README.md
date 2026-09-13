@@ -97,7 +97,7 @@ $env:PYTHONIOENCODING="utf-8"
 |---------|------|------|
 | Phase 0 | プロジェクト基盤設計・構築 | ✅ 完了 |
 | Phase 1 | DXF図面Viewer（画面表示・操作・EXE化） | ✅ 完了 |
-| Phase 2 | レイヤー管理・DXF文字・線解析 | 未着手 |
+| Phase 2 | DXF図面の構造化・要素情報解析（3ペインUI・幾何プロパティ計算） | ✅ 完了 |
 | Phase 3 | 単線壁・部屋認識 | 未着手 |
 | Phase 4 | 複線壁・壁芯算定 | 未着手 |
 | Phase 5 | 部屋名と部屋領域の紐付け | 未着手 |
@@ -109,6 +109,7 @@ $env:PYTHONIOENCODING="utf-8"
 
 ## 開発ログ・作業時間記録
 
-詳細は [docs/development_log.md](docs/development_log.md) を参照。
+詳細は [development_log.md](development_log.md) を参照。
 各フェーズの修正経緯および累計作業時間を記録しています。
+
 

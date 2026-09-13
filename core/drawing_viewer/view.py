@@ -26,6 +26,7 @@ class DrawingView(QGraphicsView):
     """
 
     zoom_changed = Signal(float)  # ズーム倍率変更シグナル（UIへの通知用）
+    mouse_world_pos_changed = Signal(float, float)  # ワールド座標(x, y)変更シグナル
 
     def __init__(self, scene, parent=None):
         super().__init__(scene, parent)
@@ -33,6 +34,9 @@ class DrawingView(QGraphicsView):
         # レンダリング品質設定
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+
+        # マウス追尾を有効化（ボタン押下無しでの mouseMoveEvent 取得）
+        self.setMouseTracking(True)
 
         # スクロールバーを非表示（自前でパン管理）
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -129,7 +133,13 @@ class DrawingView(QGraphicsView):
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        """パン中の移動処理。"""
+        """パン中の移動処理およびワールド座標の通知。"""
+        # シーン座標を取得して DXF ワールド座標 (x, -y) を通知
+        scene_pt = self.mapToScene(event.position().toPoint())
+        world_x = scene_pt.x()
+        world_y = -scene_pt.y()
+        self.mouse_world_pos_changed.emit(world_x, world_y)
+
         if self._panning:
             delta = event.position() - self._pan_start
             self._pan_start = event.position()
@@ -143,6 +153,7 @@ class DrawingView(QGraphicsView):
             event.accept()
         else:
             super().mouseMoveEvent(event)
+
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         """パン終了。"""

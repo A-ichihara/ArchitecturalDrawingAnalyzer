@@ -42,6 +42,15 @@ def build_exe():
         "--noconfirm",
         "--onedir",
         "--hide-console=hide-early",
+        "--exclude-module=pathlib",
+        "--exclude-module=matplotlib",
+        "--exclude-module=numpy",
+        "--exclude-module=scipy",
+        "--exclude-module=pandas",
+        "--exclude-module=PIL",
+        "--exclude-module=tkinter",
+        "--exclude-module=PyQt5",
+        "--exclude-module=PyQt6",
         "--name=ArchitecturalDrawingAnalyzer",
         f"--distpath={temp_dist}",
         f"--workpath={temp_work}",
@@ -50,6 +59,23 @@ def build_exe():
     ]
 
     
+    # C:\Users\aichi\anaconda3\lib\site-packages 配下の不要な旧 pathlib 関連の一次退避
+    site_packages = r"C:\Users\aichi\anaconda3\lib\site-packages"
+    moved_items = []
+
+    if os.path.exists(site_packages):
+        for fname in os.listdir(site_packages):
+            if "pathlib" in fname.lower() and not fname.endswith(".bak_ada"):
+                src = os.path.join(site_packages, fname)
+                dst = src + ".bak_ada"
+                try:
+                    os.rename(src, dst)
+                    moved_items.append((src, dst))
+                except Exception as e:
+                    print(f"Failed to move {fname}:", e)
+        if moved_items:
+            print(f"Temporarily moved {len(moved_items)} obsolete pathlib items.")
+
     print("Running PyInstaller build command:", " ".join(cmd))
     print(f"Building in temporary directory: {temp_dir}")
     
@@ -70,10 +96,20 @@ def build_exe():
             print("Build failed with return code:", result.returncode)
             sys.exit(result.returncode)
     finally:
+        for src, dst in moved_items:
+            if os.path.exists(dst):
+                try:
+                    os.rename(dst, src)
+                except Exception:
+                    pass
+        if moved_items:
+            print("Restored obsolete pathlib items.")
         try:
             shutil.rmtree(temp_dir)
         except Exception:
             pass
+
+
 
 if __name__ == "__main__":
     build_exe()

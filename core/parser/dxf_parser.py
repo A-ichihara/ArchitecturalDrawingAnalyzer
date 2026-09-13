@@ -11,7 +11,7 @@ from ezdxf.entities import (
 from core.parser.interface import IDrawingParser
 from core.models.drawing import (
     Drawing, DrawingElement, LineElement, PolylineElement,
-    TextElement, CircleElement, ArcElement
+    TextElement, CircleElement, ArcElement, InsertElement
 )
 
 logger = logging.getLogger(__name__)
@@ -138,7 +138,7 @@ class DxfParser(IDrawingParser):
     def _convert_entity(self, entity, index: int) -> Optional[DrawingElement]:
         """DXFエンティティを DrawingElement サブクラスへ変換する。"""
         etype = entity.dxftype()
-        eid = f"{etype}_{index}"
+        eid = f"{etype}_{index:06d}"
         layer = entity.dxf.get("layer", "0")
         color = entity.dxf.get("color", None)
 
@@ -156,6 +156,8 @@ class DxfParser(IDrawingParser):
             return self._convert_text(entity, eid, layer, color)
         elif etype == "MTEXT":
             return self._convert_mtext(entity, eid, layer, color)
+        elif etype == "INSERT":
+            return self._convert_insert(entity, eid, layer, color)
         else:
             return None
 
@@ -172,8 +174,12 @@ class DxfParser(IDrawingParser):
         )
 
     def _convert_lwpolyline(self, entity, eid, layer, color) -> PolylineElement:
-        # LWPOLYLINEはXY座標のみ（Z=0）
-        points = [[pt[0], pt[1]] for pt in entity.get_points("xy")]
+        # LWPOLYLINEはXY座標 + bulge を取得
+        points = []
+        bulge_list = []
+        for pt in entity.get_points("xyb"):
+            points.append([pt[0], pt[1]])
+            bulge_list.append(float(pt[2]) if len(pt) > 2 else 0.0)
         is_closed = bool(entity.closed)
         return PolylineElement(
             element_id=eid,
@@ -182,6 +188,7 @@ class DxfParser(IDrawingParser):
             color=color,
             points=points,
             is_closed=is_closed,
+            bulge_list=bulge_list,
         )
 
     def _convert_polyline(self, entity, eid, layer, color) -> PolylineElement:
@@ -200,6 +207,7 @@ class DxfParser(IDrawingParser):
             color=color,
             points=points,
             is_closed=is_closed,
+            bulge_list=[],
         )
 
     def _convert_arc(self, entity, eid, layer, color) -> ArcElement:
@@ -235,6 +243,7 @@ class DxfParser(IDrawingParser):
         insert = entity.dxf.get("insert", (0.0, 0.0))
         height = float(entity.dxf.get("height", 2.5))
         rotation = float(entity.dxf.get("rotation", 0.0))
+        style = entity.dxf.get("style", "")
         return TextElement(
             element_id=eid,
             element_type="TEXT",
@@ -244,14 +253,21 @@ class DxfParser(IDrawingParser):
             insertion_point=[float(insert[0]), float(insert[1])],
             height=height,
             rotation=rotation,
+            style=str(style),
         )
 
     def _convert_mtext(self, entity, eid, layer, color) -> TextElement:
         text = ""
         if hasattr(entity, "plain_text"):
-            text = entity.plain_text()
-        elif hasattr(entity, "plain_mtext"):
-            text = entity.plain_mtext()
+            try:
+                text = entity.plain_text()
+            except Exception:
+                pass
+        if not text and hasattr(entity, "plain_mtext"):
+            try:
+                text = entity.plain_mtext()
+            except Exception:
+                pass
         if not text and hasattr(entity, "text"):
             text = entity.text
         if not text and hasattr(entity, "dxf"):
@@ -259,12 +275,37 @@ class DxfParser(IDrawingParser):
 
         insert = entity.dxf.get("insert", (0.0, 0.0))
         height = float(entity.dxf.get("char_height", 2.5))
+        rotation = float(entity.dxf.get("rotation", 0.0))
+        style = entity.dxf.get("style", "")
         return TextElement(
             element_id=eid,
-            element_type="TEXT",
+            element_type="MTEXT",   # TEXT と区別するために MTEXT を設定
             layer=layer,
             color=color,
             text=str(text),
             insertion_point=[float(insert[0]), float(insert[1])],
             height=height,
+            rotation=rotation,
+            style=str(style),
+        )
+
+    def _convert_insert(self, entity, eid, layer, color) -> InsertElement:
+        """INSERT エンティティ（ブロック参照）を InsertElement へ変換する。"""
+        block_name = entity.dxf.get("name", "")
+        insert_pt = entity.dxf.get("insert", (0.0, 0.0))
+        rotation = float(entity.dxf.get("rotation", 0.0))
+        scale_x = float(entity.dxf.get("xscale", 1.0))
+        scale_y = float(entity.dxf.get("yscale", 1.0))
+        scale_z = float(entity.dxf.get("zscale", 1.0))
+        return InsertElement(
+            element_id=eid,
+            element_type="INSERT",
+            layer=layer,
+            color=color,
+            block_name=str(block_name),
+            insert_point=[float(insert_pt[0]), float(insert_pt[1])],
+            rotation=rotation,
+            scale_x=scale_x,
+            scale_y=scale_y,
+            scale_z=scale_z,
         )

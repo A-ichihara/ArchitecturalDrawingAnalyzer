@@ -17,7 +17,7 @@ from PySide6.QtGui import QPen, QColor, QPainterPath, QFont
 
 from core.models.drawing import (
     Drawing, DrawingElement, LineElement, PolylineElement,
-    TextElement, CircleElement, ArcElement
+    TextElement, CircleElement, ArcElement, InsertElement
 )
 from core.drawing_viewer.scene import DrawingScene, DrawingLayer
 
@@ -45,6 +45,9 @@ class DxfRenderer:
     Drawing モデルの要素を QGraphicsItem へ変換し、DrawingScene の BASE レイヤーへ追加するレンダラー。
     """
 
+    def __init__(self):
+        self._layer_items: dict[str, list[QGraphicsItem]] = {}
+
     def render(self, drawing: Drawing, scene: DrawingScene) -> None:
         """
         Drawing オブジェクトの全要素を scene の BASE レイヤーに描画する。
@@ -54,6 +57,7 @@ class DxfRenderer:
             scene: 描画先の DrawingScene
         """
         scene.clear_layer(DrawingLayer.BASE)
+        self._layer_items.clear()
 
         rendered = 0
         skipped = 0
@@ -61,12 +65,28 @@ class DxfRenderer:
         for element in drawing.elements:
             item = self._create_item(element)
             if item is not None:
+                # 要素IDと選択可能性を設定
+                item.setData(Qt.ItemDataRole.UserRole, element.element_id)
+                item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+
                 scene.add_to_layer(item, DrawingLayer.BASE)
                 rendered += 1
+
+                # レイヤー毎に保管
+                layer_name = element.layer or "0"
+                if layer_name not in self._layer_items:
+                    self._layer_items[layer_name] = []
+                self._layer_items[layer_name].append(item)
             else:
                 skipped += 1
 
         logger.info("描画完了: %d 要素描画, %d 要素スキップ", rendered, skipped)
+
+    def set_layer_visible(self, layer_name: str, visible: bool) -> None:
+        """指定したレイヤーの描画アイテムの表示/非表示を切り替える。"""
+        if layer_name in self._layer_items:
+            for item in self._layer_items[layer_name]:
+                item.setVisible(visible)
 
     # ------------------------------------------------------------------
     # プライベートメソッド
@@ -85,6 +105,8 @@ class DxfRenderer:
                 return self._create_circle(element)
             elif isinstance(element, TextElement):
                 return self._create_text(element)
+            elif isinstance(element, InsertElement):
+                return self._create_insert(element)
             else:
                 logger.debug("未対応要素タイプ: %s", element.element_type)
                 return None
@@ -194,3 +216,27 @@ class DxfRenderer:
 
         item.setPos(x, y)
         return item
+
+    def _create_insert(self, element: InsertElement) -> QGraphicsItemGroup:
+        group = QGraphicsItemGroup()
+        x = element.insert_point[0]
+        y = self._y(element.insert_point[1])
+        s = 50.0  # ブロック挿入点用の標準マーカーサイズ (50mm)
+        pen = self._get_pen(element)
+
+        l1 = QGraphicsLineItem(x - s, y, x + s, y)
+        l2 = QGraphicsLineItem(x, y - s, x, y + s)
+        l1.setPen(pen)
+        l2.setPen(pen)
+        group.addToGroup(l1)
+        group.addToGroup(l2)
+
+        text = QGraphicsSimpleTextItem(f"[{element.block_name}]")
+        font = QFont("Yu Gothic UI", 12)
+        text.setFont(font)
+        text.setBrush(DEFAULT_TEXT_COLOR)
+        text.setPos(x + s * 0.5, y - s * 0.5)
+        group.addToGroup(text)
+
+        return group
+
