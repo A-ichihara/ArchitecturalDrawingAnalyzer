@@ -1,0 +1,25 @@
+# 建築図面解析基盤 依存ライブラリ
+# Windows環境 (Python 3.9+) にて安定動作するバージョンを指定しています。
+
+# CAD (DXF) 解析
+ezdxf>=1.1.0
+
+# 幾何演算エンジン (Shapely)
+shapely>=2.0.0
+
+# UIフレームワーク (将来のビューア・UI実装用)
+PySide6>=6.5.0
+
+# PDF解析 (ベクトルPDF、画像PDF化)
+PyMuPDF>=1.22.0
+pdfplumber>=0.10.0
+
+# 画像処理・数値計算
+Pillow>=9.5.0
+numpy>=1.22.0
+
+# テストフレームワーク
+pytest>=7.0.0
+
+# EXEパッケージング
+pyinstaller>=6.0.0

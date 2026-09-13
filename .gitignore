@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# 仮想環境
+venv/
+.venv/
+env/
+
+# pytest
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# プロジェクトデータ（図面ファイルは機密情報のためリポジトリ管理しない）
+data/projects/
+data/exports/
+
+# テスト用DXFデータ
+tests/data/
+
+# PyInstallerビルド成果物
+dist/
+build/
+*.spec
+
+# OS
+.DS_Store
+Thumbs.db
