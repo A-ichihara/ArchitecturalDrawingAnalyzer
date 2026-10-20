@@ -45,7 +45,7 @@ class DxfParser(IDrawingParser):
             doc = ezdxf.readfile(file_path)
         except ezdxf.DXFError as e:
             logger.error("DXF読み込みエラー: %s - %s", file_path, e)
-            return Drawing(
+            drawing = Drawing(
                 drawing_id=drawing_id,
                 file_name=os.path.basename(file_path),
                 file_type="dxf",
@@ -53,9 +53,11 @@ class DxfParser(IDrawingParser):
                 units=units,
                 elements=[],
             )
+            drawing._meta = {"load_error": f"DXF読み込みエラー: {e}"}  # type: ignore[attr-defined]
+            return drawing
         except Exception as e:
             logger.error("予期しないエラー: %s - %s", file_path, e)
-            return Drawing(
+            drawing = Drawing(
                 drawing_id=drawing_id,
                 file_name=os.path.basename(file_path),
                 file_type="dxf",
@@ -63,6 +65,8 @@ class DxfParser(IDrawingParser):
                 units=units,
                 elements=[],
             )
+            drawing._meta = {"load_error": f"予期しない読み込みエラー: {e}"}  # type: ignore[attr-defined]
+            return drawing
 
         dxf_version = doc.dxfversion
         msp = doc.modelspace()
