@@ -1,7 +1,7 @@
 import pytest
 
-from core.analyzer.room_detector import detect_closed_polyline_room_candidates
-from core.models.drawing import Drawing, PolylineElement
+from core.analyzer.room_detector import (\n    detect_closed_polyline_room_candidates,\n    detect_linework_room_candidates,\n)
+from core.models.drawing import Drawing, LineElement, PolylineElement
 
 
 def _polyline(element_id, points, *, closed=True, bulges=None, layer="ROOM_BOUNDARY"):
@@ -118,3 +118,52 @@ def test_skips_malformed_bulge_without_aborting_other_candidates():
     rooms = detect_closed_polyline_room_candidates(drawing)
     assert len(rooms) == 1
     assert rooms[0].properties["source_element_id"] == "GOOD"
+
+
+
+def _line(element_id, start, end, layer="WALL"):
+    return LineElement(
+        element_id=element_id,
+        element_type="LINE",
+        layer=layer,
+        start=start,
+        end=end,
+    )
+
+
+def test_detects_room_enclosed_by_separate_line_entities():
+    drawing = _drawing([
+        _line("L1", [0, 0], [5000, 0]),
+        _line("L2", [5000, 0], [5000, 4000]),
+        _line("L3", [5000, 4000], [0, 4000]),
+        _line("L4", [0, 4000], [0, 0]),
+    ])
+    rooms = detect_linework_room_candidates(drawing)
+    assert len(rooms) == 1
+    assert rooms[0].area_m2 == pytest.approx(20.0)
+    assert rooms[0].room_name == ""
+    assert rooms[0].wall_type == "unknown"
+    assert rooms[0].confidence == 0.4
+    assert set(rooms[0].properties["source_element_ids"]) == {"L1", "L2", "L3", "L4"}
+
+
+def test_linework_detector_nodes_crossings_and_skips_open_chains():
+    drawing = _drawing([
+        _line("L1", [0, 0], [5000, 0]),
+        _line("L2", [5000, 0], [5000, 4000]),
+        _line("L3", [5000, 4000], [0, 4000]),
+        _line("L4", [0, 4000], [0, 0]),
+        _line("OPEN", [10000, 0], [15000, 0]),
+    ])
+    rooms = detect_linework_room_candidates(drawing)
+    assert len(rooms) == 1
+    assert rooms[0].area_m2 == pytest.approx(20.0)
+
+
+def test_linework_detector_rejects_invalid_threshold_and_unknown_units():
+    drawing = _drawing([])
+    with pytest.raises(ValueError):
+        detect_linework_room_candidates(drawing, min_area_m2=float("nan"))
+    drawing.units = "unknown"
+    with pytest.raises(ValueError, match="Unsupported drawing area unit"):
+        detect_linework_room_candidates(drawing)
