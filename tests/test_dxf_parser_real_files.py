@@ -104,3 +104,14 @@ def test_parse_preserves_initial_layer_visibility(tmp_path):
     assert drawing._meta["layers"]["VISIBLE"] == {"color": 2, "is_on": True}
     assert drawing._meta["layers"]["HIDDEN"] == {"color": 5, "is_on": False}
     assert drawing.elements[0].layer == "HIDDEN"
+
+
+def test_parse_invalid_dxf_reports_read_error(tmp_path):
+    path = tmp_path / "broken.dxf"
+    path.write_text("this is not a DXF file", encoding="utf-8")
+
+    drawing = DxfParser().parse(str(path))
+
+    assert drawing.elements == []
+    assert "load_error" in drawing._meta
+    assert drawing._meta["load_error"]
