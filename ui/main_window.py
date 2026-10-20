@@ -77,6 +77,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self._current_file: Optional[str] = None
+        self._pending_file: Optional[str] = None
         self._drawing: Optional[Drawing] = None
         self._load_thread: Optional[QThread] = None
         self._worker: Optional[DxfLoadWorker] = None
@@ -299,12 +300,11 @@ class MainWindow(QMainWindow):
             return
 
         self._act_open.setEnabled(False)
-        self._current_file = file_path
+        self._pending_file = file_path
         filename = os.path.basename(file_path)
         self._label_file.setText(f"ファイル：{filename}")
         self._label_status.setText("状態：読み込み中...")
         self._log("info", f"DXF読み込み開始: {file_path}")
-        self._update_title()
 
         # バックグラウンドスレッドで読み込み
         self._load_thread = QThread(self)
@@ -326,6 +326,7 @@ class MainWindow(QMainWindow):
         """読み込みスレッド終了後に参照を解放し、次の読み込みを許可する。"""
         self._worker = None
         self._load_thread = None
+        self._pending_file = None
         self._act_open.setEnabled(True)
 
     def _on_load_finished(self, drawing: Drawing) -> None:
@@ -335,6 +336,10 @@ class MainWindow(QMainWindow):
             self._on_load_error(load_error)
             return
 
+        # 読み込みに成功した場合に限り、現在の図面ファイルとして確定する。
+        if self._pending_file:
+            self._current_file = self._pending_file
+            self._update_title()
         self._drawing = drawing
 
         # レンダリング
@@ -371,6 +376,10 @@ class MainWindow(QMainWindow):
     def _on_load_error(self, message: str) -> None:
         """DXF読み込みエラー時の処理。"""
         self._label_status.setText("状態：読み込みエラー")
+        # 読み込みに失敗したファイルを、現在表示中の図面として表示しない。
+        current_name = os.path.basename(self._current_file) if self._current_file else "（未選択）"
+        self._label_file.setText(f"ファイル：{current_name}")
+        self._update_title()
         self._log("error", f"読み込みエラー: {message}")
 
         QMessageBox.warning(
