@@ -10,9 +10,10 @@ from __future__ import annotations
 import math
 from typing import List
 
-from shapely.geometry import Polygon
+from shapely.geometry import LineString, Polygon
+from shapely.ops import polygonize, unary_union
 
-from core.models.drawing import Drawing, PolylineElement
+from core.models.drawing import Drawing, LineElement, PolylineElement
 from core.models.room import Room
 
 
@@ -119,6 +120,97 @@ def detect_closed_polyline_room_candidates(
                     "source_element_id": elem.element_id,
                     "source_layer": elem.layer,
                     "candidate_type": "closed_straight_polyline",
+                    "area_source_unit": unit,
+                },
+            )
+        )
+
+    return candidates
+
+
+
+def detect_linework_room_candidates(
+    drawing: Drawing,
+    min_area_m2: float = 1.0,
+) -> List[Room]:
+    """Find provisional room polygons enclosed by connected LINE entities.
+
+    This supplements closed-polyline detection for drawings whose boundaries
+    are represented as separate line segments. Intersections are noded by
+    Shapely, but endpoints separated by small gaps are not automatically
+    joined. Results are geometric candidates only; text labels and wall
+    thickness are not inferred.
+    """
+    try:
+        threshold = float(min_area_m2)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("min_area_m2 must be a finite non-negative number") from exc
+    if not math.isfinite(threshold) or threshold < 0:
+        raise ValueError("min_area_m2 must be a finite non-negative number")
+
+    unit = (drawing.units or "").strip().lower()
+    area_factor = _AREA_TO_M2.get(unit)
+    if area_factor is None:
+        raise ValueError(
+            f"Unsupported drawing area unit {drawing.units!r}; "
+            f"supported units: {', '.join(sorted(_AREA_TO_M2))}"
+        )
+
+    line_records = []
+    for elem in drawing.elements:
+        if not isinstance(elem, LineElement):
+            continue
+        try:
+            start = (float(elem.start[0]), float(elem.start[1]))
+            end = (float(elem.end[0]), float(elem.end[1]))
+        except (TypeError, ValueError, IndexError, OverflowError):
+            continue
+        if not all(math.isfinite(v) for v in (*start, *end)) or start == end:
+            continue
+        line = LineString([start, end])
+        if line.is_empty or line.length == 0:
+            continue
+        line_records.append((elem.element_id, line))
+
+    if len(line_records) < 3:
+        return []
+
+    try:
+        noded_lines = unary_union([line for _, line in line_records])
+        polygons = polygonize(noded_lines)
+    except (TypeError, ValueError, OverflowError):
+        return []
+
+    candidates: List[Room] = []
+    for polygon in polygons:
+        try:
+            if polygon.is_empty or not polygon.is_valid:
+                continue
+            area_m2 = float(polygon.area) * area_factor
+            if not math.isfinite(area_m2) or area_m2 < threshold:
+                continue
+            boundary = [[float(x), float(y)] for x, y in list(polygon.exterior.coords)[:-1]]
+            source_ids = [
+                element_id
+                for element_id, line in line_records
+                if line.intersects(polygon.boundary)
+            ]
+        except (TypeError, ValueError, OverflowError):
+            continue
+
+        if len(boundary) < 3:
+            continue
+        candidates.append(
+            Room(
+                room_id=f"ROOM_LINEWORK_{len(candidates) + 1:06d}",
+                room_name="",
+                area_m2=area_m2,
+                boundary=boundary,
+                wall_type="unknown",
+                confidence=0.4,
+                properties={
+                    "source_element_ids": source_ids,
+                    "candidate_type": "closed_linework",
                     "area_source_unit": unit,
                 },
             )
