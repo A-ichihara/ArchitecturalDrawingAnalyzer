@@ -178,7 +178,9 @@ class DxfRenderer:
                 radius * 2.0,
                 radius * 2.0,
             )
-            path.arcTo(rect, -start_angle, -sweep_angle)
+            # Qt's arc angles are also counter-clockwise in its Y-down scene:
+            # after mapping world Y to -Y, the DXF angle/sweep values stay positive.
+            path.arcTo(rect, start_angle, sweep_angle)
 
         if element.is_closed:
             path.closeSubpath()
@@ -191,23 +193,20 @@ class DxfRenderer:
     def _create_arc(self, element: ArcElement) -> QGraphicsPathItem:
         """
         DXFの円弧をQPainterPathで描画する。
-        DXFの角度はデカルト座標系（反時計回り）、Qtのarcは時計回り（Y軸反転のため）。
+        DXFとQtはいずれも角度を反時計回りで指定し、Y座標のみ反転して描画する。
         """
         cx = element.center[0]
         cy = self._y(element.center[1])
         r = element.radius
 
-        # Y軸反転により角度の向きが反転するため調整
-        start_angle = element.start_angle
-        end_angle = element.end_angle
-
-        # Qt の drawArc は角度を1/16度単位、反時計回りで指定
-        # Y反転後は: 角度 = -(元の角度)
-        qt_start = -start_angle
-        span = end_angle - start_angle
+        # Qtの円弧角度は0度が右方向、正値が反時計回り。
+        # DXFのY上向き座標をsceneのY下向き座標へ反転しても、
+        # Qtの角度規約ではDXFの開始角度・反時計回りスイープをそのまま使える。
+        qt_start = element.start_angle
+        span = element.end_angle - element.start_angle
         if span <= 0:
             span += 360.0
-        qt_span = -span
+        qt_span = span
 
         path = QPainterPath()
         rect = QRectF(cx - r, cy - r, r * 2, r * 2)
