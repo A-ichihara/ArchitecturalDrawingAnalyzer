@@ -46,20 +46,19 @@ def detect_closed_polyline_room_candidates(
     coordinates, and polylines containing bulge arcs are skipped to avoid
     reporting misleading areas.
 
-    The returned `Room` objects have an empty name and a confidence of 0.5:
-    they are geometric candidates, not confirmed rooms. Coordinates in
-    `boundary` remain in the source drawing's units; `area_m2` is converted
-    to square metres based on `drawing.units`.
-
-    Args:
-        drawing: Parsed drawing whose elements use a consistent coordinate unit.
-        min_area_m2: Minimum polygon area in square metres (inclusive).
+    Returned Room objects have an empty name and confidence 0.5: they are
+    geometric candidates, not confirmed rooms. Boundary coordinates remain
+    in source drawing units; area_m2 is converted using drawing.units.
 
     Raises:
-        ValueError: If the minimum area is negative/non-finite or the drawing
-            uses a unit not supported by the conversion table.
+        ValueError: If min_area_m2 is not a finite non-negative number or the
+            drawing uses a unit not supported by the conversion table.
     """
-    if not math.isfinite(min_area_m2) or min_area_m2 < 0:
+    try:
+        threshold = float(min_area_m2)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("min_area_m2 must be a finite non-negative number") from exc
+    if not math.isfinite(threshold) or threshold < 0:
         raise ValueError("min_area_m2 must be a finite non-negative number")
 
     unit = (drawing.units or "").strip().lower()
@@ -77,18 +76,16 @@ def detect_closed_polyline_room_candidates(
         if len(elem.points) < 3:
             continue
 
-        # Missing bulge entries are treated as straight segments, matching
-        # the model's backwards-compatible representation. Any known arc or
-        # non-finite bulge makes this candidate unsuitable for this pass.
-        if any(
-            not math.isfinite(float(value)) or abs(float(value)) > 1e-12
-            for value in elem.bulge_list
-        ):
+        try:
+            bulges = [float(value) for value in elem.bulge_list]
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if any(not math.isfinite(value) or abs(value) > 1e-12 for value in bulges):
             continue
 
         try:
             points = [(float(point[0]), float(point[1])) for point in elem.points]
-        except (TypeError, ValueError, IndexError):
+        except (TypeError, ValueError, IndexError, OverflowError):
             continue
         if not all(math.isfinite(x) and math.isfinite(y) for x, y in points):
             continue
@@ -104,11 +101,10 @@ def detect_closed_polyline_room_candidates(
             if not polygon.is_valid or polygon.is_empty:
                 continue
             area_m2 = float(polygon.area) * area_factor
-        except (TypeError, ValueError):
-            # A malformed geometry must not abort processing of other rooms.
+        except (TypeError, ValueError, OverflowError):
             continue
 
-        if not math.isfinite(area_m2) or area_m2 < min_area_m2:
+        if not math.isfinite(area_m2) or area_m2 < threshold:
             continue
 
         candidates.append(
