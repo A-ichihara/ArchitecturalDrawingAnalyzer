@@ -144,12 +144,43 @@ class DxfRenderer:
         if len(element.points) < 2:
             return None
 
+        points = element.points
         path = QPainterPath()
-        path.moveTo(element.points[0][0], self._y(element.points[0][1]))
-        for pt in element.points[1:]:
-            path.lineTo(pt[0], self._y(pt[1]))
+        path.moveTo(points[0][0], self._y(points[0][1]))
+        segment_count = len(points) if element.is_closed else len(points) - 1
 
-        if element.is_closed and len(element.points) >= 2:
+        for i in range(segment_count):
+            start = points[i]
+            end = points[(i + 1) % len(points)]
+            bulge = element.bulge_list[i] if i < len(element.bulge_list) else 0.0
+            dx = end[0] - start[0]
+            dy = end[1] - start[1]
+            chord_length = math.hypot(dx, dy)
+
+            if chord_length == 0.0 or abs(bulge) < 1e-12:
+                path.lineTo(end[0], self._y(end[1]))
+                continue
+
+            # DXF bulge = tan(included_angle / 4). Compute the arc center in
+            # world coordinates, then invert Y and sweep for Qt's scene space.
+            offset = chord_length * (1.0 - bulge * bulge) / (4.0 * bulge)
+            mid_x = (start[0] + end[0]) / 2.0
+            mid_y = (start[1] + end[1]) / 2.0
+            center_x = mid_x - (dy / chord_length) * offset
+            center_y = mid_y + (dx / chord_length) * offset
+            radius = math.hypot(start[0] - center_x, start[1] - center_y)
+            start_angle = math.degrees(math.atan2(start[1] - center_y, start[0] - center_x))
+            sweep_angle = math.degrees(4.0 * math.atan(bulge))
+
+            rect = QRectF(
+                center_x - radius,
+                -center_y - radius,
+                radius * 2.0,
+                radius * 2.0,
+            )
+            path.arcTo(rect, -start_angle, -sweep_angle)
+
+        if element.is_closed:
             path.closeSubpath()
 
         item = QGraphicsPathItem(path)
