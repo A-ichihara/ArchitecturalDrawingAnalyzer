@@ -102,6 +102,7 @@ class DxfParser(IDrawingParser):
         drawing_dict = {
             "dxf_version": dxf_version,
             "unsupported_types": unsupported_types,
+            "layers": {layer.dxf.name: {"color": abs(layer.dxf.color), "is_on": layer.is_on()} for layer in doc.layers},
         }
         # Drawingモデルに直接 properties はないため、
         # 解析メタデータは別属性として付加する
