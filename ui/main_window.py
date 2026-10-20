@@ -79,6 +79,7 @@ class MainWindow(QMainWindow):
         self._current_file: Optional[str] = None
         self._drawing: Optional[Drawing] = None
         self._load_thread: Optional[QThread] = None
+        self._worker: Optional[DxfLoadWorker] = None
 
         self._setup_ui()
         self._setup_logging()
@@ -128,11 +129,11 @@ class MainWindow(QMainWindow):
         self.addToolBar(toolbar)
 
         # DXFを開く
-        act_open = QAction("📂 DXFを開く", self)
-        act_open.setShortcut(QKeySequence.StandardKey.Open)
-        act_open.setStatusTip("DXFファイルを開いて図面を表示します")
-        act_open.triggered.connect(self._open_dxf)
-        toolbar.addAction(act_open)
+        self._act_open = QAction("📂 DXFを開く", self)
+        self._act_open.setShortcut(QKeySequence.StandardKey.Open)
+        self._act_open.setStatusTip("DXFファイルを開いて図面を表示します")
+        self._act_open.triggered.connect(self._open_dxf)
+        toolbar.addAction(self._act_open)
 
         toolbar.addSeparator()
 
@@ -288,7 +289,16 @@ class MainWindow(QMainWindow):
         self._load_dxf(file_path)
 
     def _load_dxf(self, file_path: str) -> None:
-        """DXFファイルをバックグラウンドで読み込む。"""
+        """DXFファイルをバックグラウンドで読み込む。
+
+        同時に複数の読み込みスレッドを起動しないようにし、
+        完了後にスレッドとワーカーの参照を安全に解放する。
+        """
+        if self._load_thread is not None and self._load_thread.isRunning():
+            self._log("warn", "別のDXFを読み込み中のため、新しい読み込みを開始しませんでした。")
+            return
+
+        self._act_open.setEnabled(False)
         self._current_file = file_path
         filename = os.path.basename(file_path)
         self._label_file.setText(f"ファイル：{filename}")
@@ -305,7 +315,18 @@ class MainWindow(QMainWindow):
         self._worker.error.connect(self._on_load_error)
         self._worker.finished.connect(self._load_thread.quit)
         self._worker.error.connect(self._load_thread.quit)
+        self._worker.finished.connect(self._worker.deleteLater)
+        self._worker.error.connect(self._worker.deleteLater)
+        self._load_thread.finished.connect(self._on_load_thread_finished)
+        self._load_thread.finished.connect(self._load_thread.deleteLater)
         self._load_thread.start()
+
+    @Slot()
+    def _on_load_thread_finished(self) -> None:
+        """読み込みスレッド終了後に参照を解放し、次の読み込みを許可する。"""
+        self._worker = None
+        self._load_thread = None
+        self._act_open.setEnabled(True)
 
     def _on_load_finished(self, drawing: Drawing) -> None:
         """DXF読み込み完了時の処理。"""
