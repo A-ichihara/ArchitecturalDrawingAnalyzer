@@ -77,7 +77,6 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self._current_file: Optional[str] = None
-        self._pending_file: Optional[str] = None
         self._drawing: Optional[Drawing] = None
         self._load_thread: Optional[QThread] = None
         self._worker: Optional[DxfLoadWorker] = None
@@ -300,7 +299,6 @@ class MainWindow(QMainWindow):
             return
 
         self._act_open.setEnabled(False)
-        self._pending_file = file_path
         filename = os.path.basename(file_path)
         self._label_file.setText(f"ファイル：{filename}")
         self._label_status.setText("状態：読み込み中...")
@@ -326,7 +324,6 @@ class MainWindow(QMainWindow):
         """読み込みスレッド終了後に参照を解放し、次の読み込みを許可する。"""
         self._worker = None
         self._load_thread = None
-        self._pending_file = None
         self._act_open.setEnabled(True)
 
     def _on_load_finished(self, file_path: str, drawing: Drawing) -> None:
