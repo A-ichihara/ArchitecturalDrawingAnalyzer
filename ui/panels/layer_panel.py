@@ -4,7 +4,7 @@ DXF図面内のレイヤー一覧・表示制御パネル。
 """
 
 import logging
-from typing import Dict, Union
+from typing import Dict, Union, Optional
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QTreeWidget, QTreeWidgetItem,
@@ -49,12 +49,13 @@ class LayerPanel(QWidget):
         self.tree.itemChanged.connect(self._on_item_changed)
         layout.addWidget(self.tree)
 
-    def set_layers(self, layers: Dict[str, Union[LayerStats, int]]) -> None:
+    def set_layers(self, layers: Dict[str, Union[LayerStats, int]], layer_info: Optional[Dict[str, dict]] = None) -> None:
         """
         レイヤー情報の一覧を設定して更新する。
         
         Args:
             layers: レイヤー名をキー、LayerStats または要素数を値とする辞書
+            layer_info: DXFの元レイヤー状態（未指定時は全て表示）
         """
         self.tree.blockSignals(True)
         self.tree.clear()
@@ -65,7 +66,8 @@ class LayerPanel(QWidget):
             item.setText(0, name)
             item.setText(1, str(count))
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(0, Qt.CheckState.Checked)
+            is_on = (layer_info or {}).get(name, {}).get("is_on", True)
+            item.setCheckState(0, Qt.CheckState.Checked if is_on else Qt.CheckState.Unchecked)
 
         self.tree.blockSignals(False)
 
