@@ -309,6 +309,11 @@ class MainWindow(QMainWindow):
 
     def _on_load_finished(self, drawing: Drawing) -> None:
         """DXF読み込み完了時の処理。"""
+        load_error = getattr(drawing, "_meta", {}).get("load_error")
+        if load_error:
+            self._on_load_error(load_error)
+            return
+
         self._drawing = drawing
 
         # レンダリング
