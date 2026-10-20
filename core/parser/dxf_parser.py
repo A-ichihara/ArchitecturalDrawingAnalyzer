@@ -76,6 +76,7 @@ class DxfParser(IDrawingParser):
         elements: List[DrawingElement] = []
         unsupported_types: Dict[str, int] = {}
         element_counter = 0
+        failed_types: Dict[str, int] = {}
 
         for entity in msp:
             try:
@@ -87,12 +88,16 @@ class DxfParser(IDrawingParser):
                     etype = entity.dxftype()
                     unsupported_types[etype] = unsupported_types.get(etype, 0) + 1
             except Exception as e:
-                logger.warning("エンティティ変換スキップ (%s): %s", entity.dxftype(), e)
+                etype = entity.dxftype()
+                failed_types[etype] = failed_types.get(etype, 0) + 1
+                logger.warning("エンティティ変換スキップ (%s): %s", etype, e)
 
         # ログ出力
         logger.info("取得要素数: %d", len(elements))
         if unsupported_types:
             logger.info("未対応エンティティ（スキップ）: %s", unsupported_types)
+        if failed_types:
+            logger.warning("変換失敗エンティティ: %s", failed_types)
 
         drawing = Drawing(
             drawing_id=drawing_id,
@@ -106,6 +111,7 @@ class DxfParser(IDrawingParser):
         drawing_dict = {
             "dxf_version": dxf_version,
             "unsupported_types": unsupported_types,
+            "failed_types": failed_types,
             "layers": {layer.dxf.name: {"color": abs(layer.dxf.color), "is_on": layer.is_on()} for layer in doc.layers},
         }
         # Drawingモデルに直接 properties はないため、
