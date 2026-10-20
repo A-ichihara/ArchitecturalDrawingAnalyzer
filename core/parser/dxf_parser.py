@@ -126,7 +126,7 @@ class DxfParser(IDrawingParser):
         for layer in doc.layers:
             layers.append({
                 "name": layer.dxf.name,
-                "color": layer.dxf.color,
+                "color": abs(layer.dxf.color),  # 負数は非表示フラグなので、色番号は正規化する
                 "is_on": layer.is_on(),
             })
         return layers
