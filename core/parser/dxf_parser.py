@@ -193,12 +193,14 @@ class DxfParser(IDrawingParser):
 
     def _convert_polyline(self, entity, eid, layer, color) -> PolylineElement:
         points = []
+        bulge_list = []
         try:
             for vertex in entity.vertices:
                 pt = vertex.dxf.location
                 points.append([float(pt.x), float(pt.y)])
+                bulge_list.append(float(vertex.dxf.get("bulge", 0.0)))
         except Exception:
-            pass
+            logger.warning("POLYLINE頂点の一部を取得できませんでした: %s", eid)
         is_closed = bool(entity.is_closed)
         return PolylineElement(
             element_id=eid,
@@ -207,7 +209,7 @@ class DxfParser(IDrawingParser):
             color=color,
             points=points,
             is_closed=is_closed,
-            bulge_list=[],
+            bulge_list=bulge_list,
         )
 
     def _convert_arc(self, entity, eid, layer, color) -> ArcElement:
