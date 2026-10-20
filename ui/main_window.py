@@ -318,7 +318,11 @@ class MainWindow(QMainWindow):
         stats = DrawingAnalyzer.analyze(drawing)
 
         # パネルの更新
-        self._layer_panel.set_layers(stats.layers)
+        layer_info = getattr(drawing, "_meta", {}).get("layers", {})
+        self._layer_panel.set_layers(stats.layers, layer_info=layer_info)
+        for layer_name, info in layer_info.items():
+            if not info["is_on"]:
+                self._renderer.set_layer_visible(layer_name, False)
         self._element_tree_panel.set_drawing(drawing)
         self._property_panel.clear()
 
