@@ -4,6 +4,7 @@ ui.main_window
 ツールバー、Drawing Viewer、ステータスバーで構成されます。
 """
 
+import html
 import logging
 import os
 from typing import Optional
@@ -14,7 +15,7 @@ from PySide6.QtWidgets import (
     QLabel, QSizePolicy, QDockWidget, QTextEdit, QPushButton,
     QTabWidget
 )
-from PySide6.QtCore import Qt, QThread, Signal, QObject
+from PySide6.QtCore import Qt, QThread, Signal, QObject, Slot
 from PySide6.QtGui import QAction, QIcon, QKeySequence, QColor
 
 from core.drawing_viewer.scene import DrawingScene
@@ -425,11 +426,26 @@ class MainWindow(QMainWindow):
 
 
 # ---------------------------------------------------------------------------
-# カスタムログハンドラ
+# GUIスレッドへの安全なログ受け渡し
 # ---------------------------------------------------------------------------
 
+class _QtLogBridge(QObject):
+    """別スレッドからのログをGUIスレッドへ転送するブリッジ。"""
+
+    message = Signal(str, str)  # color, escaped HTML message
+
+    def __init__(self, widget: QTextEdit):
+        super().__init__(widget)
+        self._widget = widget
+        self.message.connect(self._append_message, Qt.ConnectionType.QueuedConnection)
+
+    @Slot(str, str)
+    def _append_message(self, color: str, message: str) -> None:
+        self._widget.append(f'<span style="color:{color};">{message}</span>')
+
+
 class _QtLogHandler(logging.Handler):
-    """Pythonのloggingメッセージを QTextEdit に出力するハンドラー。"""
+    """PythonのloggingメッセージをGUIスレッド経由で QTextEdit に出力する。"""
 
     COLOR_MAP = {
         logging.DEBUG:    "#565f89",
@@ -441,12 +457,12 @@ class _QtLogHandler(logging.Handler):
 
     def __init__(self, widget: QTextEdit):
         super().__init__()
-        self._widget = widget
+        self._bridge = _QtLogBridge(widget)
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            msg = self.format(record)
+            message = html.escape(self.format(record))
             color = self.COLOR_MAP.get(record.levelno, "#a9b1d6")
-            self._widget.append(f'<span style="color:{color};">{msg}</span>')
+            self._bridge.message.emit(color, message)
         except Exception:
-            pass
+            self.handleError(record)
