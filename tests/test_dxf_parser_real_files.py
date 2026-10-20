@@ -115,3 +115,22 @@ def test_parse_invalid_dxf_reports_read_error(tmp_path):
     assert drawing.elements == []
     assert "load_error" in drawing._meta
     assert drawing._meta["load_error"]
+
+
+def test_parse_counts_failed_entity_conversions(tmp_path, monkeypatch):
+    """Conversion errors should be distinguishable from unsupported DXF types."""
+    doc = ezdxf.new("R2010")
+    doc.modelspace().add_line((0, 0), (1, 1))
+    path = tmp_path / "failed_entity.dxf"
+    doc.saveas(path)
+
+    def fail_conversion(entity, index):
+        raise ValueError("malformed entity")
+
+    monkeypatch.setattr(DxfParser, "_convert_entity", fail_conversion)
+    drawing = DxfParser().parse(str(path))
+
+    assert drawing.elements == []
+    assert drawing._meta["failed_types"] == {"LINE": 1}
+    assert drawing._meta["unsupported_types"] == {}
+    assert "load_error" not in drawing._meta
