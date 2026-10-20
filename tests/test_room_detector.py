@@ -80,3 +80,39 @@ def test_rejects_invalid_area_threshold_and_unknown_units():
     drawing.units = "drawing_units"
     with pytest.raises(ValueError, match="Unsupported drawing area unit"):
         detect_closed_polyline_room_candidates(drawing)
+
+
+def test_skips_non_finite_coordinates_without_aborting_other_candidates():
+    drawing = _drawing([
+        _polyline("BAD", [[0, 0], [float("nan"), 0], [5000, 4000]]),
+        _polyline("GOOD", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]]),
+    ])
+
+    rooms = detect_closed_polyline_room_candidates(drawing)
+
+    assert len(rooms) == 1
+    assert rooms[0].properties["source_element_id"] == "GOOD"
+
+
+def test_skips_non_finite_bulge_values():
+    drawing = _drawing([
+        _polyline(
+            "BAD_BULGE",
+            [[0, 0], [5000, 0], [5000, 4000], [0, 4000]],
+            bulges=[0.0, float("nan"), 0.0, 0.0],
+        )
+    ])
+
+    assert detect_closed_polyline_room_candidates(drawing) == []
+
+
+def test_skips_malformed_point_without_aborting_other_candidates():
+    drawing = _drawing([
+        _polyline("BAD_POINT", [[0, 0], [5000], [5000, 4000]]),
+        _polyline("GOOD", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]]),
+    ])
+
+    rooms = detect_closed_polyline_room_candidates(drawing)
+
+    assert len(rooms) == 1
+    assert rooms[0].properties["source_element_id"] == "GOOD"
