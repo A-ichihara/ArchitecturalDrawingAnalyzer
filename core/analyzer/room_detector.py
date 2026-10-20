@@ -1,9 +1,8 @@
 """Deterministic first-pass room candidate extraction from DXF geometry.
 
-This module deliberately does not infer walls from arbitrary line networks or
-associate room labels. It only recognizes explicit, closed, straight-sided
-polylines that form valid polygons, providing a conservative foundation for
-later room-boundary detection.
+Recognizes explicit closed straight-sided polylines and polygons enclosed by
+connected LINE entities. Candidates remain provisional: room labels, wall
+thickness, wall centerlines, and automatic gap-closing are not inferred.
 """
 from __future__ import annotations
 
