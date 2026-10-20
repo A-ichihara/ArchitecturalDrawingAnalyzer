@@ -50,6 +50,19 @@ def test_polyline_geometry():
     assert pytest.approx(poly_closed.length, abs=1e-6) == 300.0
 
 
+def test_polyline_bulge_arc_length():
+    # bulge=1 means a 180-degree arc; a 10-unit chord has radius 5.
+    poly = PolylineElement(
+        element_id="POLY_BULGE_000001",
+        element_type="POLYLINE",
+        layer="0",
+        points=[(0.0, 0.0), (10.0, 0.0)],
+        is_closed=False,
+        bulge_list=[1.0, 0.0],
+    )
+    assert pytest.approx(poly.length, abs=1e-6) == 5.0 * math.pi
+
+
 def test_arc_geometry():
     # 90度の円弧 (半径 100, 0° -> 90°)
     arc = ArcElement(
