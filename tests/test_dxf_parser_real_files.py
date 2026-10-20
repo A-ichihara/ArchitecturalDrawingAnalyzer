@@ -89,3 +89,18 @@ def test_get_layer_info_from_real_dxf(tmp_path):
     assert by_name["WALL"]["is_on"] is True
     assert by_name["ROOM_NAME"]["color"] == 3
     assert by_name["ROOM_NAME"]["is_on"] is False
+
+
+def test_parse_preserves_initial_layer_visibility(tmp_path):
+    doc = ezdxf.new("R2010")
+    doc.layers.new("VISIBLE", dxfattribs={"color": 2})
+    doc.layers.new("HIDDEN", dxfattribs={"color": 5})
+    doc.layers.get("HIDDEN").off()
+    doc.modelspace().add_line((0, 0), (1, 1), dxfattribs={"layer": "HIDDEN"})
+    path = tmp_path / "hidden.dxf"
+    doc.saveas(path)
+
+    drawing = DxfParser().parse(str(path))
+    assert drawing._meta["layers"]["VISIBLE"] == {"color": 2, "is_on": True}
+    assert drawing._meta["layers"]["HIDDEN"] == {"color": 5, "is_on": False}
+    assert drawing.elements[0].layer == "HIDDEN"
