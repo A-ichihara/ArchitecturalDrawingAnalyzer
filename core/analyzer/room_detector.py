@@ -42,8 +42,9 @@ def detect_closed_polyline_room_candidates(
     """Return provisional room candidates from explicit closed polylines.
 
     Only closed, valid polygons with straight segments are considered. Open
-    polylines, self-intersecting boundaries, degenerate shapes, and polylines
-    containing bulge arcs are skipped to avoid reporting misleading areas.
+    polylines, self-intersecting boundaries, degenerate shapes, non-finite
+    coordinates, and polylines containing bulge arcs are skipped to avoid
+    reporting misleading areas.
 
     The returned `Room` objects have an empty name and a confidence of 0.5:
     they are geometric candidates, not confirmed rooms. Coordinates in
@@ -75,21 +76,38 @@ def detect_closed_polyline_room_candidates(
             continue
         if len(elem.points) < 3:
             continue
-        if any(abs(value) > 1e-12 for value in elem.bulge_list):
+
+        # Missing bulge entries are treated as straight segments, matching
+        # the model's backwards-compatible representation. Any known arc or
+        # non-finite bulge makes this candidate unsuitable for this pass.
+        if any(
+            not math.isfinite(float(value)) or abs(float(value)) > 1e-12
+            for value in elem.bulge_list
+        ):
             continue
 
-        points = [(float(point[0]), float(point[1])) for point in elem.points]
+        try:
+            points = [(float(point[0]), float(point[1])) for point in elem.points]
+        except (TypeError, ValueError, IndexError):
+            continue
+        if not all(math.isfinite(x) and math.isfinite(y) for x, y in points):
+            continue
+
         # Remove a repeated final point; Polygon closes its ring itself.
         if len(points) > 1 and points[0] == points[-1]:
             points.pop()
         if len(set(points)) < 3:
             continue
 
-        polygon = Polygon(points)
-        if not polygon.is_valid or polygon.is_empty:
+        try:
+            polygon = Polygon(points)
+            if not polygon.is_valid or polygon.is_empty:
+                continue
+            area_m2 = float(polygon.area) * area_factor
+        except (TypeError, ValueError):
+            # A malformed geometry must not abort processing of other rooms.
             continue
 
-        area_m2 = float(polygon.area) * area_factor
         if not math.isfinite(area_m2) or area_m2 < min_area_m2:
             continue
 
