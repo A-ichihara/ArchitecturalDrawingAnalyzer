@@ -193,7 +193,7 @@ class DxfRenderer:
     def _create_arc(self, element: ArcElement) -> QGraphicsPathItem:
         """
         DXFの円弧をQPainterPathで描画する。
-        DXFの角度はデカルト座標系（反時計回り）、Qtのarcは時計回り（Y軸反転のため）。
+        DXFとQtはいずれも角度を反時計回りで指定し、Y座標のみ反転して描画する。
         """
         cx = element.center[0]
         cy = self._y(element.center[1])
