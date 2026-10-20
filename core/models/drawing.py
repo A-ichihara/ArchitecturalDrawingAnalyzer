@@ -93,15 +93,28 @@ class PolylineElement(DrawingElement):
 
     @property
     def length(self) -> float:
-        """ポリラインの全長（直線近似）"""
+        """ポリラインの全長（bulgeで表される円弧区間も含めて計算）。"""
         if len(self.points) < 2:
             return 0.0
+
         total = 0.0
-        pts = self.points + ([self.points[0]] if self.is_closed else [])
-        for i in range(len(pts) - 1):
-            dx = pts[i + 1][0] - pts[i][0]
-            dy = pts[i + 1][1] - pts[i][1]
-            total += math.sqrt(dx * dx + dy * dy)
+        segment_count = len(self.points) if self.is_closed else len(self.points) - 1
+        for i in range(segment_count):
+            start = self.points[i]
+            end = self.points[(i + 1) % len(self.points)]
+            dx = end[0] - start[0]
+            dy = end[1] - start[1]
+            chord_length = math.hypot(dx, dy)
+            bulge = self.bulge_list[i] if i < len(self.bulge_list) else 0.0
+
+            if chord_length == 0.0 or abs(bulge) < 1e-12:
+                total += chord_length
+                continue
+
+            included_angle = 4.0 * math.atan(abs(bulge))
+            radius = chord_length * (1.0 + bulge * bulge) / (4.0 * abs(bulge))
+            total += radius * included_angle
+
         return total
 
     @property
