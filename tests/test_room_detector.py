@@ -170,3 +170,32 @@ def test_linework_detector_rejects_invalid_threshold_and_unknown_units():
     drawing.units = "unknown"
     with pytest.raises(ValueError, match="Unsupported drawing area unit"):
         detect_linework_room_candidates(drawing)
+
+
+
+def test_linework_detector_finds_two_adjacent_rooms_without_outer_duplicate():
+    drawing = _drawing([
+        _line("BOTTOM", [0, 0], [10000, 0]),
+        _line("TOP", [10000, 4000], [0, 4000]),
+        _line("LEFT", [0, 4000], [0, 0]),
+        _line("RIGHT", [10000, 0], [10000, 4000]),
+        _line("PARTITION", [5000, 0], [5000, 4000]),
+    ])
+    rooms = detect_linework_room_candidates(drawing)
+    assert len(rooms) == 2
+    assert sorted(room.area_m2 for room in rooms) == pytest.approx([20.0, 20.0])
+    assert all(room.properties["candidate_type"] == "closed_linework" for room in rooms)
+
+
+def test_linework_detector_skips_malformed_and_zero_length_lines():
+    drawing = _drawing([
+        _line("L1", [0, 0], [5000, 0]),
+        _line("L2", [5000, 0], [5000, 4000]),
+        _line("L3", [5000, 4000], [0, 4000]),
+        _line("L4", [0, 4000], [0, 0]),
+        _line("ZERO", [1, 1], [1, 1]),
+        _line("BAD", [0, 0], [float("inf"), 0]),
+    ])
+    rooms = detect_linework_room_candidates(drawing)
+    assert len(rooms) == 1
+    assert rooms[0].area_m2 == pytest.approx(20.0)
