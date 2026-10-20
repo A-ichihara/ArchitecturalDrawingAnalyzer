@@ -83,4 +83,10 @@ class DrawingScene(QGraphicsScene):
         base_group = self._layers.get(int(DrawingLayer.BASE))
         if base_group is None or not base_group.childItems():
             return self.sceneRect()
-        return base_group.boundingRect()
+        visible_items = [item for item in base_group.childItems() if item.isVisible()]
+        if not visible_items:
+            return QRectF()
+        bounds = visible_items[0].mapRectToScene(visible_items[0].boundingRect())
+        for item in visible_items[1:]:
+            bounds = bounds.united(item.mapRectToScene(item.boundingRect()))
+        return bounds
