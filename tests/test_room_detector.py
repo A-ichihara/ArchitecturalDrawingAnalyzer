@@ -1,6 +1,9 @@
 import pytest
 
-from core.analyzer.room_detector import (\n    detect_closed_polyline_room_candidates,\n    detect_linework_room_candidates,\n)
+from core.analyzer.room_detector import (
+    detect_closed_polyline_room_candidates,
+    detect_linework_room_candidates,
+)
 from core.models.drawing import Drawing, LineElement, PolylineElement
 
 
