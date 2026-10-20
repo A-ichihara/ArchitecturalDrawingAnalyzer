@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QGraphicsItem, QGraphicsLineItem, QGraphicsPathItem,
     QGraphicsEllipseItem, QGraphicsSimpleTextItem, QGraphicsItemGroup
 )
-from PySide6.QtCore import QRectF, QPointF
+from PySide6.QtCore import Qt, QRectF, QPointF
 from PySide6.QtGui import QPen, QColor, QPainterPath, QFont
 
 from core.models.drawing import (
