@@ -282,3 +282,21 @@ def test_dxf_parse_adjacent_linework_rooms_keep_distinct_labels(tmp_path):
     assert len(associated) == 2
     assert sorted(room.area_m2 for room in associated) == pytest.approx([20.0, 20.0])
     assert {room.room_name for room in associated} == {"事務室", "会議室"}
+
+@pytest.mark.parametrize("insunits", [3, 7, 8, 20, 99])
+def test_dxf_parser_defaults_to_mm_for_unsupported_insunits(tmp_path, insunits):
+    """Unknown DXF unit codes must use the documented legacy mm fallback."""
+    import ezdxf
+
+    doc = ezdxf.new("R2010")
+    doc.header["$INSUNITS"] = insunits
+    doc.modelspace().add_line((0, 0), (1000, 0))
+    path = tmp_path / f"unsupported_units_{insunits}.dxf"
+    doc.saveas(path)
+
+    drawing = DxfParser().parse(str(path))
+
+    assert len(drawing.elements) == 1
+    assert drawing.units == "mm"
+    assert drawing._meta["units_source"] == "default_mm"
+
