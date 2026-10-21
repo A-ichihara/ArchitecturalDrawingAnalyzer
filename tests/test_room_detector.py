@@ -710,3 +710,61 @@ def test_deduplication_keeps_adjacent_rooms_and_removes_only_matching_linework()
     assert len(combined) == 2
     assert combined[0] is polyline_rooms[0]
     assert sorted(room.area_m2 for room in combined) == pytest.approx([20.0, 20.0])
+
+
+
+def test_closed_polyline_removes_repeated_final_vertex_before_storing_boundary():
+    """DXF rings that repeat their first vertex should not store it twice."""
+    drawing = _drawing([
+        _polyline(
+            "CLOSED_WITH_REPEAT",
+            [[0, 0], [5000, 0], [5000, 4000], [0, 4000], [0, 0]],
+        )
+    ])
+    rooms = detect_closed_polyline_room_candidates(drawing)
+    assert len(rooms) == 1
+    assert rooms[0].area_m2 == pytest.approx(20.0)
+    assert rooms[0].boundary == [
+        [0, 0], [5000, 0], [5000, 4000], [0, 4000]
+    ]
+
+
+def test_closed_polyline_includes_candidate_equal_to_minimum_area_threshold():
+    """The minimum area threshold is inclusive, not a strict lower bound."""
+    drawing = _drawing([
+        _polyline("ROOM_1M2", [[0, 0], [1000, 0], [1000, 1000], [0, 1000]])
+    ])
+    rooms = detect_closed_polyline_room_candidates(drawing, min_area_m2=1.0)
+    assert len(rooms) == 1
+    assert rooms[0].area_m2 == pytest.approx(1.0)
+
+
+def test_linework_detector_skips_non_finite_lines_without_losing_valid_room():
+    """Malformed or non-finite line entities should not poison valid geometry."""
+    drawing = _drawing([
+        _line("NAN_LINE", [float("nan"), 0], [1000, 0]),
+        _line("SHORT_START", [0], [1000, 0]),
+        _line("L1", [0, 0], [5000, 0]),
+        _line("L2", [5000, 0], [5000, 4000]),
+        _line("L3", [5000, 4000], [0, 4000]),
+        _line("L4", [0, 4000], [0, 0]),
+    ])
+    rooms = detect_linework_room_candidates(drawing)
+    assert len(rooms) == 1
+    assert rooms[0].area_m2 == pytest.approx(20.0)
+
+
+def test_deduplication_removes_duplicate_linework_candidates_too():
+    """Exact duplicates within linework results should only be returned once."""
+    drawing = _drawing([
+        _line("L1", [0, 0], [5000, 0]),
+        _line("L2", [5000, 0], [5000, 4000]),
+        _line("L3", [5000, 4000], [0, 4000]),
+        _line("L4", [0, 4000], [0, 0]),
+    ])
+    rooms = detect_linework_room_candidates(drawing)
+    assert len(rooms) == 1
+    duplicate = replace(rooms[0], room_id="DUPLICATE_ROOM_ID")
+    combined = deduplicate_room_candidates([], [rooms[0], duplicate])
+    assert len(combined) == 1
+    assert combined[0] is rooms[0]
