@@ -454,3 +454,18 @@ def test_room_name_association_ignores_empty_and_whitespace_text():
     rooms = detect_closed_polyline_room_candidates(drawing)
     associated = associate_room_names(drawing, rooms)
     assert associated[0].room_name == ""
+
+@pytest.mark.parametrize(
+    "point",
+    [[float("nan"), 2000], [2500, float("inf")], [float("-inf"), 2000]],
+)
+def test_room_name_association_skips_non_finite_text_coordinates(point):
+    drawing = _drawing([
+        _polyline("ROOM", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]]),
+        _text("BAD_LABEL", "事務室", point),
+    ])
+    rooms = detect_closed_polyline_room_candidates(drawing)
+    associated = associate_room_names(drawing, rooms)
+    assert len(associated) == 1
+    assert associated[0].room_name == ""
+
