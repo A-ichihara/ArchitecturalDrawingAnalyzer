@@ -521,3 +521,32 @@ def test_room_name_association_does_not_guess_for_overlapping_candidates():
     assert len(associated) == 2
     assert all(room.room_name == "" for room in associated)
 
+
+
+@pytest.mark.parametrize(
+    ("units", "width", "height", "horizontal_gap", "vertical_gap"),
+    [
+        ("cm", 500, 400, 0.04, 0.03),
+        ("in", 200, 160, 0.02, 0.01),
+        ("ft", 20, 16, 0.001, 0.001),
+    ],
+)
+def test_default_gap_tolerance_is_one_millimetre_for_other_supported_units(
+    units, width, height, horizontal_gap, vertical_gap
+):
+    drawing = _drawing([
+        _line("BOTTOM", [0, 0], [width, 0]),
+        _line("RIGHT", [width + horizontal_gap, 0], [width, height]),
+        _line("TOP", [width, height], [0, height]),
+        _line("LEFT", [0, height], [0, vertical_gap]),
+    ], units=units)
+
+    rooms = detect_linework_room_candidates(drawing)
+
+    assert len(rooms) == 1
+    expected_area_m2 = width * height * {
+        "cm": 1e-4,
+        "in": 0.0254**2,
+        "ft": 0.3048**2,
+    }[units]
+    assert rooms[0].area_m2 == pytest.approx(expected_area_m2, rel=0.01)
