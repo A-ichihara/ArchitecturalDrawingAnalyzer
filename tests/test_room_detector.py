@@ -639,3 +639,37 @@ def test_linework_detector_keeps_adjacent_rooms_with_text_on_shared_wall():
     rooms = associate_room_names(drawing, detect_linework_room_candidates(drawing))
     assert len(rooms) == 2
     assert all(room.room_name == "" for room in rooms)
+
+
+def test_deduplication_handles_reversed_polyline_vertex_order():
+    """A coincident LINE room must not duplicate a reversed polyline room."""
+    drawing = _drawing([
+        _polyline("P", [[0, 0], [0, 4000], [5000, 4000], [5000, 0]]),
+        _line("L1", [0, 0], [5000, 0]),
+        _line("L2", [5000, 0], [5000, 4000]),
+        _line("L3", [5000, 4000], [0, 4000]),
+        _line("L4", [0, 4000], [0, 0]),
+    ])
+    polyline_rooms = detect_closed_polyline_room_candidates(drawing)
+    linework_rooms = detect_linework_room_candidates(drawing)
+    combined = deduplicate_room_candidates(polyline_rooms, linework_rooms)
+    assert len(polyline_rooms) == len(linework_rooms) == 1
+    assert len(combined) == 1
+    assert combined[0] is polyline_rooms[0]
+
+
+def test_deduplication_does_not_remove_partially_overlapping_rooms():
+    """Overlap alone must not be treated as identical geometry."""
+    drawing = _drawing([
+        _polyline("P", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]]),
+        _line("L1", [2500, 0], [7500, 0]),
+        _line("L2", [7500, 0], [7500, 4000]),
+        _line("L3", [7500, 4000], [2500, 4000]),
+        _line("L4", [2500, 4000], [2500, 0]),
+    ])
+    combined = deduplicate_room_candidates(
+        detect_closed_polyline_room_candidates(drawing),
+        detect_linework_room_candidates(drawing),
+    )
+    assert len(combined) == 2
+    assert sorted(room.area_m2 for room in combined) == pytest.approx([20.0, 20.0])
