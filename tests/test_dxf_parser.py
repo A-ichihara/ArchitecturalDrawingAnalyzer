@@ -159,3 +159,36 @@ def test_dxf_mtext_paragraph_is_normalized_before_room_association(tmp_path):
     assert associated[0].room_name == "会議室 （受付）"
     assert associated[0].properties["room_name_source_element_id"].startswith("MTEXT_")
 
+@pytest.mark.parametrize(
+    ("insunits", "expected_units"),
+    [(1, "in"), (2, "ft"), (4, "mm"), (5, "cm"), (6, "m")],
+)
+def test_dxf_parser_infers_supported_insunits(tmp_path, insunits, expected_units):
+    import ezdxf
+
+    doc = ezdxf.new("R2010")
+    doc.header["$INSUNITS"] = insunits
+    doc.modelspace().add_line((0, 0), (1000, 0))
+    path = tmp_path / f"units_{insunits}.dxf"
+    doc.saveas(path)
+
+    drawing = DxfParser().parse(str(path))
+
+    assert drawing.units == expected_units
+    assert drawing._meta["units_source"] == "dxf_insunits"
+
+
+def test_dxf_parser_explicit_units_override_insunits(tmp_path):
+    import ezdxf
+
+    doc = ezdxf.new("R2010")
+    doc.header["$INSUNITS"] = 6  # metres in the file
+    doc.modelspace().add_line((0, 0), (1, 0))
+    path = tmp_path / "units_override.dxf"
+    doc.saveas(path)
+
+    drawing = DxfParser().parse(str(path), units="mm")
+
+    assert drawing.units == "mm"
+    assert drawing._meta["units_source"] == "explicit_argument"
+
