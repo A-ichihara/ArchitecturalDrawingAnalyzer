@@ -58,6 +58,27 @@ class DxfLoadWorker(QObject):
             self.error.emit(self._file_path, str(e))
 
 
+class RoomDetectionWorker(QObject):
+    """部屋候補の検出をGUIスレッドの外で実行する。"""
+
+    finished = Signal(object, object)
+    error = Signal(str)
+
+    def __init__(self, drawing: Drawing):
+        super().__init__()
+        self._drawing = drawing
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            polyline_rooms = detect_closed_polyline_room_candidates(self._drawing)
+            linework_rooms = detect_linework_room_candidates(self._drawing)
+            self.finished.emit(polyline_rooms, linework_rooms)
+        except Exception as exc:
+            logger.exception("部屋候補の検出に失敗しました")
+            self.error.emit(str(exc))
+
+
 # ---------------------------------------------------------------------------
 # メインウィンドウ
 # ---------------------------------------------------------------------------
@@ -84,6 +105,8 @@ class MainWindow(QMainWindow):
         self._drawing: Optional[Drawing] = None
         self._load_thread: Optional[QThread] = None
         self._worker: Optional[DxfLoadWorker] = None
+        self._room_thread: Optional[QThread] = None
+        self._room_worker: Optional[RoomDetectionWorker] = None
 
         self._setup_ui()
         self._setup_logging()
@@ -304,6 +327,9 @@ class MainWindow(QMainWindow):
         同時に複数の読み込みスレッドを起動しないようにし、
         完了後にスレッドとワーカーの参照を安全に解放する。
         """
+        if self._room_thread is not None and self._room_thread.isRunning():
+            self._log("warn", "部屋候補の解析中は別のDXFを開けません。")
+            return
         if self._load_thread is not None and self._load_thread.isRunning():
             self._log("warn", "別のDXFを読み込み中のため、新しい読み込みを開始しませんでした。")
             return
@@ -398,17 +424,42 @@ class MainWindow(QMainWindow):
         )
 
     def _detect_room_candidates(self) -> None:
-        """現在のDXFから暫定的な閉領域候補を抽出して一覧表示する。"""
-        if self._drawing is None:
+        """GUIをブロックせずに暫定的な部屋候補を検出する。"""
+        if self._drawing is None or self._room_thread is not None:
             return
-        try:
-            polyline_rooms = detect_closed_polyline_room_candidates(self._drawing)
-            linework_rooms = detect_linework_room_candidates(self._drawing)
-        except Exception as exc:
-            logger.exception("部屋候補の検出に失敗しました")
-            self._log("error", f"部屋候補の検出に失敗: {exc}")
-            QMessageBox.warning(self, "部屋候補の検出", f"解析に失敗しました。\n{exc}")
-            return
+        self._act_detect_rooms.setEnabled(False)
+        self._act_open.setEnabled(False)
+        self._label_status.setText("状態：部屋候補を解析中...")
+        self._room_thread = QThread(self)
+        self._room_worker = RoomDetectionWorker(self._drawing)
+        self._room_worker.moveToThread(self._room_thread)
+        self._room_thread.started.connect(self._room_worker.run)
+        self._room_worker.finished.connect(self._on_room_detection_finished)
+        self._room_worker.error.connect(self._on_room_detection_error)
+        self._room_worker.finished.connect(self._room_thread.quit)
+        self._room_worker.error.connect(self._room_thread.quit)
+        self._room_worker.finished.connect(self._room_worker.deleteLater)
+        self._room_worker.error.connect(self._room_worker.deleteLater)
+        self._room_thread.finished.connect(self._on_room_thread_finished)
+        self._room_thread.finished.connect(self._room_thread.deleteLater)
+        self._room_thread.start()
+
+    @Slot()
+    def _on_room_thread_finished(self) -> None:
+        self._room_worker = None
+        self._room_thread = None
+        self._act_detect_rooms.setEnabled(self._drawing is not None)
+        self._act_open.setEnabled(True)
+
+    @Slot(str)
+    def _on_room_detection_error(self, message: str) -> None:
+        self._label_status.setText("状態：部屋候補の解析失敗")
+        self._log("error", f"部屋候補の検出に失敗: {message}")
+        QMessageBox.warning(self, "部屋候補の検出", f"解析に失敗しました。\\n{message}")
+
+    @Slot(object, object)
+    def _on_room_detection_finished(self, polyline_rooms: list, linework_rooms: list) -> None:
+        self._label_status.setText("状態：部屋候補の解析完了")
         rooms = polyline_rooms + linework_rooms
         self._log("info", f"部屋候補: ポリライン {len(polyline_rooms)} 件 / 線分 {len(linework_rooms)} 件")
         if not rooms:
