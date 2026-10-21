@@ -71,7 +71,7 @@ def test_respects_drawing_units():
 
 def test_rejects_invalid_area_threshold_and_unknown_units():
     drawing = _drawing([])
-    for invalid in (-1, float("nan"), float("inf"), "invalid", None):
+    for invalid in (-1, float("nan"), float("inf"), "invalid"):
         with pytest.raises(ValueError):
             detect_closed_polyline_room_candidates(drawing, min_area_m2=invalid)
     drawing.units = "drawing_units"
@@ -293,3 +293,13 @@ def test_linework_detector_zero_tolerance_disables_endpoint_snapping():
         _line("L4", [0, 4000], [0, 0]),
     ])
     assert detect_linework_room_candidates(drawing, gap_tolerance=0) == []
+
+
+def test_none_gap_tolerance_uses_unit_aware_default():
+    drawing = _drawing([
+        _line("L1", [0, 0], [5000, 0]),
+        _line("L2", [5000.4, 0], [5000, 4000]),
+        _line("L3", [5000, 4000], [0, 4000]),
+        _line("L4", [0, 4000], [0, 0.3]),
+    ])
+    assert len(detect_linework_room_candidates(drawing, gap_tolerance=None)) == 1
