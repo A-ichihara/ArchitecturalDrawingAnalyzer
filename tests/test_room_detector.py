@@ -188,6 +188,23 @@ def test_linework_detector_finds_two_adjacent_rooms_without_outer_duplicate():
     assert all(room.properties["candidate_type"] == "closed_linework" for room in rooms)
 
 
+def test_linework_detector_skips_nested_loops_with_ambiguous_hole_areas():
+    # A nested loop can represent wall thickness or a shaft rather than a
+    # separate room. Room.boundary cannot encode holes, so neither polygon
+    # should be emitted with an area that disagrees with its stored boundary.
+    drawing = _drawing([
+        _line("OUT_BOTTOM", [0, 0], [10000, 0]),
+        _line("OUT_RIGHT", [10000, 0], [10000, 10000]),
+        _line("OUT_TOP", [10000, 10000], [0, 10000]),
+        _line("OUT_LEFT", [0, 10000], [0, 0]),
+        _line("IN_BOTTOM", [3000, 3000], [7000, 3000]),
+        _line("IN_RIGHT", [7000, 3000], [7000, 7000]),
+        _line("IN_TOP", [7000, 7000], [3000, 7000]),
+        _line("IN_LEFT", [3000, 7000], [3000, 3000]),
+    ])
+    assert detect_linework_room_candidates(drawing) == []
+
+
 def test_linework_detector_skips_malformed_and_zero_length_lines():
     drawing = _drawing([
         _line("L1", [0, 0], [5000, 0]),
