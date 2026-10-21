@@ -38,6 +38,10 @@ class DxfParser(IDrawingParser):
             なし（読み込み失敗時はログを出して空のDrawingを返す）
         """
         scale = kwargs.get("scale", 1.0)
+        # Explicit caller configuration wins. Otherwise infer the linear unit
+        # from DXF $INSUNITS; unitless/unsupported values conservatively fall
+        # back to the application's historical millimetre assumption.
+        units_override = "units" in kwargs
         units = kwargs.get("units", "mm")
         drawing_id = os.path.splitext(os.path.basename(file_path))[0]
 
@@ -69,6 +73,21 @@ class DxfParser(IDrawingParser):
             return drawing
 
         dxf_version = doc.dxfversion
+        raw_insunits = doc.header.get("$INSUNITS", 0)
+        try:
+            dxf_insunits = int(raw_insunits or 0)
+        except (TypeError, ValueError, OverflowError):
+            # Malformed unit metadata must not prevent otherwise readable
+            # geometry from loading; use the documented fallback instead.
+            logger.warning("DXF $INSUNITS が不正なため既定単位を使用します: %r", raw_insunits)
+            dxf_insunits = 0
+        insunits_to_unit = {1: "in", 2: "ft", 4: "mm", 5: "cm", 6: "m"}
+        inferred_units = insunits_to_unit.get(dxf_insunits)
+        units_source = "explicit_argument" if units_override else (
+            "dxf_insunits" if inferred_units else "default_mm"
+        )
+        if not units_override and inferred_units:
+            units = inferred_units
         msp = doc.modelspace()
 
         logger.info("DXF読み込み完了: %s (version=%s)", file_path, dxf_version)
@@ -110,6 +129,8 @@ class DxfParser(IDrawingParser):
         # DXFバージョンと未対応要素情報を properties に格納
         drawing_dict = {
             "dxf_version": dxf_version,
+            "dxf_insunits": dxf_insunits,
+            "units_source": units_source,
             "unsupported_types": unsupported_types,
             "failed_types": failed_types,
             "layers": {layer.dxf.name: {"color": abs(layer.dxf.color), "is_on": layer.is_on()} for layer in doc.layers},
@@ -205,13 +226,14 @@ class DxfParser(IDrawingParser):
     def _convert_polyline(self, entity, eid, layer, color) -> PolylineElement:
         points = []
         bulge_list = []
-        try:
-            for vertex in entity.vertices:
-                pt = vertex.dxf.location
-                points.append([float(pt.x), float(pt.y)])
-                bulge_list.append(float(vertex.dxf.get("bulge", 0.0)))
-        except Exception:
-            logger.warning("POLYLINE頂点の一部を取得できませんでした: %s", eid)
+        # Never return a partially converted polyline. In particular, a
+        # truncated closed boundary could produce a misleading room area.
+        # The caller records conversion failures and continues with later
+        # entities in the DXF.
+        for vertex in entity.vertices:
+            pt = vertex.dxf.location
+            points.append([float(pt.x), float(pt.y)])
+            bulge_list.append(float(vertex.dxf.get("bulge", 0.0)))
         is_closed = bool(entity.is_closed)
         return PolylineElement(
             element_id=eid,
