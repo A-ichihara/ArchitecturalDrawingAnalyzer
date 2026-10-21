@@ -414,3 +414,43 @@ def test_room_name_association_skips_malformed_text_coordinates():
     rooms = detect_closed_polyline_room_candidates(drawing)
     associated = associate_room_names(drawing, rooms)
     assert associated[0].room_name == ""
+
+
+
+def test_associates_text_with_linework_room_candidate():
+    drawing = _drawing([
+        _line("BOTTOM", [0, 0], [5000, 0]),
+        _line("RIGHT", [5000, 0], [5000, 4000]),
+        _line("TOP", [5000, 4000], [0, 4000]),
+        _line("LEFT", [0, 4000], [0, 0]),
+        _text("LABEL", "会議室", [2500, 2000]),
+    ])
+    rooms = detect_linework_room_candidates(drawing)
+    associated = associate_room_names(drawing, rooms)
+    assert len(associated) == 1
+    assert associated[0].room_name == "会議室"
+    assert associated[0].properties["room_name_source_element_id"] == "LABEL"
+
+
+def test_room_name_association_preserves_existing_room_properties():
+    drawing = _drawing([
+        _polyline("ROOM", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]]),
+        _text("LABEL", "事務室", [2500, 2000]),
+    ])
+    rooms = detect_closed_polyline_room_candidates(drawing)
+    rooms[0].properties["custom_marker"] = "keep"
+    associated = associate_room_names(drawing, rooms)
+    assert associated[0] is not rooms[0]
+    assert associated[0].properties["custom_marker"] == "keep"
+    assert "room_name_source_element_id" not in rooms[0].properties
+    assert "room_name_association" not in rooms[0].properties
+
+
+def test_room_name_association_ignores_empty_and_whitespace_text():
+    drawing = _drawing([
+        _polyline("ROOM", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]]),
+        _text("EMPTY", "   ", [2000, 2000]),
+    ])
+    rooms = detect_closed_polyline_room_candidates(drawing)
+    associated = associate_room_names(drawing, rooms)
+    assert associated[0].room_name == ""
