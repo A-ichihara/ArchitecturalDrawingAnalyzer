@@ -595,3 +595,47 @@ def test_linework_detector_preserves_adjacent_rooms_with_dangling_wall_lines():
     rooms = detect_linework_room_candidates(drawing)
     assert len(rooms) == 2
     assert sorted(room.area_m2 for room in rooms) == pytest.approx([20.0, 20.0])
+
+
+def test_linework_detector_skips_nested_loops_even_with_interior_text():
+    """Text within a shaft-like nested loop must not turn it into a room."""
+    drawing = _drawing([
+        _line("OUT_BOTTOM", [0, 0], [10000, 0]),
+        _line("OUT_RIGHT", [10000, 0], [10000, 10000]),
+        _line("OUT_TOP", [10000, 10000], [0, 10000]),
+        _line("OUT_LEFT", [0, 10000], [0, 0]),
+        _line("IN_BOTTOM", [3000, 3000], [7000, 3000]),
+        _line("IN_RIGHT", [7000, 3000], [7000, 7000]),
+        _line("IN_TOP", [7000, 7000], [3000, 7000]),
+        _line("IN_LEFT", [3000, 7000], [3000, 3000]),
+        TextElement(
+            element_id="SHAFT_LABEL",
+            element_type="TEXT",
+            layer="ROOM_LABELS",
+            text="PS",
+            insertion_point=[5000, 5000],
+        ),
+    ])
+    rooms = detect_linework_room_candidates(drawing)
+    assert associate_room_names(drawing, rooms) == []
+
+
+def test_linework_detector_keeps_adjacent_rooms_with_text_on_shared_wall():
+    """A label on a shared wall is not assigned to either neighboring room."""
+    drawing = _drawing([
+        _line("BOTTOM", [0, 0], [10000, 0]),
+        _line("TOP", [10000, 4000], [0, 4000]),
+        _line("LEFT", [0, 4000], [0, 0]),
+        _line("RIGHT", [10000, 0], [10000, 4000]),
+        _line("PARTITION", [5000, 0], [5000, 4000]),
+        TextElement(
+            element_id="WALL_LABEL",
+            element_type="TEXT",
+            layer="ROOM_LABELS",
+            text="会議室",
+            insertion_point=[5000, 2000],
+        ),
+    ])
+    rooms = associate_room_names(drawing, detect_linework_room_candidates(drawing))
+    assert len(rooms) == 2
+    assert all(room.room_name == "" for room in rooms)
