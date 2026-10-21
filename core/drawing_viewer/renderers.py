@@ -251,6 +251,7 @@ class DxfRenderer:
         group = QGraphicsItemGroup()
         x = element.insert_point[0]
         y = self._y(element.insert_point[1])
+        # 未展開のブロック参照を表すマーカー。倍率や回転はマーカー自体には適用しない。
         s = 50.0  # ブロック挿入点用の標準マーカーサイズ (50mm)
         # INSERTは参照情報のみ保持しており、現状はブロック本体でなくマーカーを描画する。
         pen = self._get_pen(element)
