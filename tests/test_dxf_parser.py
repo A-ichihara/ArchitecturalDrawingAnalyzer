@@ -407,3 +407,40 @@ def test_dxf_parser_rejects_partially_read_polyline_vertices():
 
     with pytest.raises(ValueError, match="vertex stream truncated"):
         DxfParser()._convert_polyline(entity, "POLYLINE_000001", "WALLS", None)
+
+
+def test_renderer_continues_after_unexpected_element_error(monkeypatch):
+    """A failure for one element must not prevent later elements from rendering."""
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from core.drawing_viewer.renderers import DxfRenderer
+    from core.drawing_viewer.scene import DrawingScene, DrawingLayer
+    from core.models.drawing import Drawing, LineElement
+
+    app = QApplication.instance() or QApplication([])
+    drawing = Drawing(
+        drawing_id="render-test",
+        file_name="render-test.dxf",
+        file_type="dxf",
+        elements=[
+            LineElement(element_id="bad", start=[0, 0], end=[1, 1]),
+            LineElement(element_id="good", start=[1, 1], end=[2, 2]),
+        ],
+    )
+    renderer = DxfRenderer()
+    create_item = renderer._create_item
+
+    def fail_first(element):
+        if element.element_id == "bad":
+            raise RuntimeError("simulated renderer failure")
+        return create_item(element)
+
+    monkeypatch.setattr(renderer, "_create_item", fail_first)
+    scene = DrawingScene()
+    renderer.render(drawing, scene)
+
+    base_group = scene._layers[int(DrawingLayer.BASE)]
+    assert len(base_group.childItems()) == 1
+    assert base_group.childItems()[0].data(0) == "good"
+    assert app is not None
