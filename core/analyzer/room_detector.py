@@ -386,7 +386,10 @@ def associate_room_names(drawing: Drawing, rooms: List[Room]) -> List[Room]:
         except (TypeError, ValueError):
             continue
 
-    labels_by_room = {room.room_id: [] for room, _ in room_polygons}
+    # Use object identity rather than room_id: callers may supply externally
+    # created candidates whose IDs are duplicated. Such candidates must not
+    # accidentally share text associations.
+    labels_by_room = {id(room): [] for room, _ in room_polygons}
     for element, label, point in text_records:
         matching = []
         for room, polygon in room_polygons:
@@ -397,11 +400,11 @@ def associate_room_names(drawing: Drawing, rooms: List[Room]) -> List[Room]:
                 continue
         # Do not guess when candidates overlap or share an interior.
         if len(matching) == 1:
-            labels_by_room[matching[0].room_id].append((element, label))
+            labels_by_room[id(matching[0])].append((element, label))
 
     associated = []
     for room in rooms:
-        matches = labels_by_room.get(room.room_id, [])
+        matches = labels_by_room.get(id(room), [])
         if len(matches) == 1:
             element, label = matches[0]
             properties = {
