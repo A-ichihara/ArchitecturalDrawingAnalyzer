@@ -63,7 +63,14 @@ class DxfRenderer:
         skipped = 0
 
         for element in drawing.elements:
-            item = self._create_item(element)
+            try:
+                item = self._create_item(element)
+            except Exception as exc:
+                # A malformed entity must not prevent the remaining drawing
+                # elements from being displayed.
+                logger.warning("描画要素の処理失敗 (%s): %s", getattr(element, "element_id", "?"), exc)
+                skipped += 1
+                continue
             if item is not None:
                 # 要素IDと選択可能性を設定
                 item.setData(Qt.ItemDataRole.UserRole, element.element_id)
