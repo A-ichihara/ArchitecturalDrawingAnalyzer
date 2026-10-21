@@ -300,3 +300,38 @@ def test_dxf_parser_defaults_to_mm_for_unsupported_insunits(tmp_path, insunits):
     assert drawing.units == "mm"
     assert drawing._meta["units_source"] == "default_mm"
 
+def test_dxf_parser_preserves_insert_block_transform_metadata(tmp_path):
+    """Block references retain their transform instead of being silently flattened."""
+    import ezdxf
+    from core.models.drawing import InsertElement
+
+    doc = ezdxf.new("R2010")
+    block = doc.blocks.new(name="DOOR_SYMBOL")
+    block.add_line((0, 0), (900, 0))
+    doc.modelspace().add_blockref(
+        "DOOR_SYMBOL",
+        insert=(1000, 2000),
+        dxfattribs={
+            "rotation": 30,
+            "xscale": 2,
+            "yscale": 3,
+            "zscale": 1,
+            "layer": "DOORS",
+        },
+    )
+    path = tmp_path / "insert_transform.dxf"
+    doc.saveas(path)
+
+    drawing = DxfParser().parse(str(path))
+
+    inserts = [element for element in drawing.elements if isinstance(element, InsertElement)]
+    assert len(inserts) == 1
+    insert = inserts[0]
+    assert insert.block_name == "DOOR_SYMBOL"
+    assert insert.insert_point == pytest.approx([1000, 2000])
+    assert insert.rotation == pytest.approx(30)
+    assert insert.scale_x == pytest.approx(2)
+    assert insert.scale_y == pytest.approx(3)
+    assert insert.scale_z == pytest.approx(1)
+    assert insert.layer == "DOORS"
+
