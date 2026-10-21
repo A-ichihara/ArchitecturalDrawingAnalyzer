@@ -414,6 +414,7 @@ def test_renderer_continues_after_unexpected_element_error(monkeypatch):
     import os
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
+    from PySide6.QtCore import Qt
     from core.drawing_viewer.renderers import DxfRenderer
     from core.drawing_viewer.scene import DrawingScene, DrawingLayer
     from core.models.drawing import Drawing, LineElement
@@ -424,8 +425,8 @@ def test_renderer_continues_after_unexpected_element_error(monkeypatch):
         file_name="render-test.dxf",
         file_type="dxf",
         elements=[
-            LineElement(element_id="bad", start=[0, 0], end=[1, 1]),
-            LineElement(element_id="good", start=[1, 1], end=[2, 2]),
+            LineElement(element_id="bad", element_type="LINE", start=[0, 0], end=[1, 1]),
+            LineElement(element_id="good", element_type="LINE", start=[1, 1], end=[2, 2]),
         ],
     )
     renderer = DxfRenderer()
@@ -442,5 +443,5 @@ def test_renderer_continues_after_unexpected_element_error(monkeypatch):
 
     base_group = scene._layers[int(DrawingLayer.BASE)]
     assert len(base_group.childItems()) == 1
-    assert base_group.childItems()[0].data(0) == "good"
+    assert base_group.childItems()[0].data(Qt.ItemDataRole.UserRole) == "good"
     assert app is not None
