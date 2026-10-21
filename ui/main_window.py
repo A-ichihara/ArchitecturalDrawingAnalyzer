@@ -412,15 +412,17 @@ class MainWindow(QMainWindow):
         if not rooms:
             QMessageBox.information(self, "部屋候補の検出", "閉じた領域候補は見つかりませんでした。")
             return
-        lines = [f"{index}. {room.area_m2:.2f} ㎡（{room.properties[\'candidate_type\']}）"
-                 for index, room in enumerate(rooms, start=1)]
-        preview = "\\n".join(lines[:30])
+        lines = [
+            f"{index}. {room.area_m2:.2f} ㎡（{room.properties.get('candidate_type', 'unknown')}）"
+            for index, room in enumerate(rooms, start=1)
+        ]
+        preview = "\n".join(lines[:30])
         if len(lines) > 30:
-            preview += f"\\n…ほか {len(lines) - 30} 件"
+            preview += f"\n…ほか {len(lines) - 30} 件"
         QMessageBox.information(
             self, "部屋候補の検出",
-            f"暫定的な閉領域候補: {len(rooms)} 件\\n"
-            "※ 部屋名・壁芯は未判定です。重複候補が含まれる場合があります。\\n\\n"
+            f"暫定的な閉領域候補: {len(rooms)} 件\n"
+            "※ 部屋名・壁芯は未判定です。重複候補が含まれる場合があります。\n\n"
             + preview,
         )
 
