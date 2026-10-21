@@ -377,6 +377,9 @@ class MainWindow(QMainWindow):
         self._update_title()
         self._drawing = drawing
         self._act_detect_rooms.setEnabled(True)
+        self._label_coords.setText(
+            f"座標：(0.00, 0.00) {self._coordinate_unit_suffix()}"
+        )
 
         # レンダリング
         self._renderer.render(drawing, self._scene)
@@ -490,9 +493,24 @@ class MainWindow(QMainWindow):
         """ズーム倍率変更時にステータスバーを更新する。"""
         self._label_zoom.setText(f"ズーム：{zoom * 100:.1f}%")
 
+    def _coordinate_unit_suffix(self) -> str:
+        """現在の図面座標に対応する単位表示を返す。"""
+        units = (self._drawing.units if self._drawing is not None else "mm") or "mm"
+        normalized = str(units).strip().lower()
+        aliases = {
+            "millimeter": "mm", "millimeters": "mm",
+            "centimeter": "cm", "centimeters": "cm",
+            "meter": "m", "meters": "m",
+            "inch": "in", "inches": "in",
+            "foot": "ft", "feet": "ft",
+        }
+        return aliases.get(normalized, normalized)
+
     def _on_mouse_world_pos_changed(self, x: float, y: float) -> None:
         """マウス移動時にワールド座標表示を更新する。"""
-        self._label_coords.setText(f"座標：({x:.2f}, {y:.2f}) mm")
+        self._label_coords.setText(
+            f"座標：({x:.2f}, {y:.2f}) {self._coordinate_unit_suffix()}"
+        )
 
     def _on_layer_visibility_changed(self, layer_name: str, visible: bool) -> None:
         """レイヤーパネルで表示トグルが変更されたときの処理。"""
