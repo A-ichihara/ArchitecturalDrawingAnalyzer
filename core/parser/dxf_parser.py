@@ -226,13 +226,14 @@ class DxfParser(IDrawingParser):
     def _convert_polyline(self, entity, eid, layer, color) -> PolylineElement:
         points = []
         bulge_list = []
-        try:
-            for vertex in entity.vertices:
-                pt = vertex.dxf.location
-                points.append([float(pt.x), float(pt.y)])
-                bulge_list.append(float(vertex.dxf.get("bulge", 0.0)))
-        except Exception:
-            logger.warning("POLYLINE頂点の一部を取得できませんでした: %s", eid)
+        # Never return a partially converted polyline. In particular, a
+        # truncated closed boundary could produce a misleading room area.
+        # The caller records conversion failures and continues with later
+        # entities in the DXF.
+        for vertex in entity.vertices:
+            pt = vertex.dxf.location
+            points.append([float(pt.x), float(pt.y)])
+            bulge_list.append(float(vertex.dxf.get("bulge", 0.0)))
         is_closed = bool(entity.is_closed)
         return PolylineElement(
             element_id=eid,
