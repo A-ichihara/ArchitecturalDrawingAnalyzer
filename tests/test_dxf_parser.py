@@ -206,3 +206,38 @@ def test_dxf_parser_defaults_to_mm_when_insunits_is_unitless(tmp_path):
     assert drawing.units == "mm"
     assert drawing._meta["units_source"] == "default_mm"
 
+
+
+def test_dxf_parse_linework_gap_detection_and_room_label_end_to_end(tmp_path):
+    """Real DXF parsing, unit-aware gap snapping, and label association integrate."""
+    import ezdxf
+    from core.analyzer.room_detector import (
+        associate_room_names,
+        detect_linework_room_candidates,
+    )
+
+    doc = ezdxf.new("R2010")
+    doc.header["$INSUNITS"] = 4  # millimetres
+    msp = doc.modelspace()
+    # A 0.5 mm endpoint gap should be closed by the default 1 mm tolerance.
+    msp.add_line((0, 0), (5000, 0), dxfattribs={"layer": "WALLS"})
+    msp.add_line((5000.5, 0), (5000.5, 4000), dxfattribs={"layer": "WALLS"})
+    msp.add_line((5000.5, 4000), (0, 4000), dxfattribs={"layer": "WALLS"})
+    msp.add_line((0, 4000), (0, 0), dxfattribs={"layer": "WALLS"})
+    msp.add_text(
+        "会議室",
+        dxfattribs={"insert": (2500, 2000), "height": 250, "layer": "ROOM_LABELS"},
+    )
+    path = tmp_path / "linework_gap_room.dxf"
+    doc.saveas(path)
+
+    drawing = DxfParser().parse(str(path))
+    rooms = detect_linework_room_candidates(drawing)
+    associated = associate_room_names(drawing, rooms)
+
+    assert drawing.units == "mm"
+    assert len(associated) == 1
+    assert associated[0].area_m2 == pytest.approx(20.0, rel=0.001)
+    assert associated[0].room_name == "会議室"
+    assert associated[0].properties["candidate_type"] == "closed_linework"
+    assert associated[0].properties["room_name_association"] == "single_text_inside_candidate"
