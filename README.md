@@ -77,6 +77,16 @@ $env:PYTHONIOENCODING="utf-8"
 .\dist\ArchitecturalDrawingAnalyzer\ArchitecturalDrawingAnalyzer.exe
 ```
 
+### ビルド済みWindows版EXEのダウンロード（開発用）
+
+Pythonをインストールせずに試す場合は、GitHub Actionsが生成したWindows版アプリを利用できます。
+
+1. [GitHub Actionsの実行一覧](https://github.com/A-ichihara/ArchitecturalDrawingAnalyzer/actions)を開き、成功（緑のチェック）の実行を選びます。
+2. 実行ページ下部の **Artifacts** から `ArchitecturalDrawingAnalyzer-Windows-Python312` をダウンロードします。
+3. ダウンロードしたZIPをフォルダーに展開し、展開先の `ArchitecturalDrawingAnalyzer.exe` を起動します。EXEだけをZIPから取り出さず、関連ファイルも含めて展開してください。
+
+成果物はビルド実行日から14日間で期限切れになります。Artifactsが表示されない場合は、ビルドが成功しているか、保存期限が切れていないか確認してください。これは開発用ビルドであり、設計業務に使用する前に実図面で動作と結果を確認してください。
+
 ### EXEのビルド
 
 ```powershell
