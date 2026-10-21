@@ -241,3 +241,44 @@ def test_dxf_parse_linework_gap_detection_and_room_label_end_to_end(tmp_path):
     assert associated[0].room_name == "会議室"
     assert associated[0].properties["candidate_type"] == "closed_linework"
     assert associated[0].properties["room_name_association"] == "single_text_inside_candidate"
+
+
+def test_dxf_parse_adjacent_linework_rooms_keep_distinct_labels(tmp_path):
+    """Adjacent rooms remain separate and each receives only its own label."""
+    import ezdxf
+    from core.analyzer.room_detector import (
+        associate_room_names,
+        detect_linework_room_candidates,
+    )
+
+    doc = ezdxf.new("R2010")
+    doc.header["$INSUNITS"] = 4  # millimetres
+    msp = doc.modelspace()
+    # Two 5 m x 4 m rooms share a wall at x=5000 mm.
+    for start, end in [
+        ((0, 0), (10000, 0)),
+        ((10000, 0), (10000, 4000)),
+        ((10000, 4000), (0, 4000)),
+        ((0, 4000), (0, 0)),
+        ((5000, 0), (5000, 4000)),
+    ]:
+        msp.add_line(start, end, dxfattribs={"layer": "WALLS"})
+    msp.add_text(
+        "事務室",
+        dxfattribs={"insert": (2500, 2000), "height": 250, "layer": "ROOM_LABELS"},
+    )
+    msp.add_text(
+        "会議室",
+        dxfattribs={"insert": (7500, 2000), "height": 250, "layer": "ROOM_LABELS"},
+    )
+    path = tmp_path / "adjacent_rooms.dxf"
+    doc.saveas(path)
+
+    drawing = DxfParser().parse(str(path))
+    rooms = detect_linework_room_candidates(drawing)
+    associated = associate_room_names(drawing, rooms)
+
+    assert drawing.units == "mm"
+    assert len(associated) == 2
+    assert sorted(room.area_m2 for room in associated) == pytest.approx([20.0, 20.0])
+    assert {room.room_name for room in associated} == {"事務室", "会議室"}
