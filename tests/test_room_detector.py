@@ -673,3 +673,20 @@ def test_deduplication_does_not_remove_partially_overlapping_rooms():
     )
     assert len(combined) == 2
     assert sorted(room.area_m2 for room in combined) == pytest.approx([20.0, 20.0])
+
+
+def test_deduplication_keeps_adjacent_rooms_with_shared_boundary():
+    """Sharing a wall is not geometric duplication."""
+    drawing = _drawing([
+        _polyline("P", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]]),
+        _line("L1", [5000, 0], [10000, 0]),
+        _line("L2", [10000, 0], [10000, 4000]),
+        _line("L3", [10000, 4000], [5000, 4000]),
+        _line("L4", [5000, 4000], [5000, 0]),
+    ])
+    combined = deduplicate_room_candidates(
+        detect_closed_polyline_room_candidates(drawing),
+        detect_linework_room_candidates(drawing),
+    )
+    assert len(combined) == 2
+    assert sorted(room.area_m2 for room in combined) == pytest.approx([20.0, 20.0])
