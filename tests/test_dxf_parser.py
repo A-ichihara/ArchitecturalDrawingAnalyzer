@@ -389,3 +389,21 @@ def test_dxf_parser_keeps_later_entities_when_one_conversion_fails(tmp_path, mon
     assert lines[0].start == pytest.approx([200, 0])
     assert drawing._meta["failed_types"] == {"LINE": 1}
     assert drawing._meta["unsupported_types"] == {}
+
+def test_dxf_parser_rejects_partially_read_polyline_vertices():
+    """A broken vertex iterator must not yield a truncated closed boundary."""
+    from types import SimpleNamespace
+
+    def broken_vertices():
+        yield SimpleNamespace(
+            dxf=SimpleNamespace(
+                location=SimpleNamespace(x=0.0, y=0.0),
+                get=lambda key, default: default,
+            )
+        )
+        raise ValueError("vertex stream truncated")
+
+    entity = SimpleNamespace(vertices=broken_vertices(), is_closed=True)
+
+    with pytest.raises(ValueError, match="vertex stream truncated"):
+        DxfParser()._convert_polyline(entity, "POLYLINE_000001", "WALLS", None)
