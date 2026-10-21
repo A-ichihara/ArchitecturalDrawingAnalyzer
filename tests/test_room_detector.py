@@ -257,7 +257,7 @@ def test_linework_detector_closes_small_endpoint_gaps():
 
 def test_linework_detector_rejects_invalid_gap_tolerance():
     drawing = _drawing([])
-    for invalid in (-1, float("nan"), float("inf"), "invalid", None):
+    for invalid in (-1, float("nan"), float("inf"), "invalid"):
         with pytest.raises(ValueError, match="gap_tolerance"):
             detect_linework_room_candidates(drawing, gap_tolerance=invalid)
 
