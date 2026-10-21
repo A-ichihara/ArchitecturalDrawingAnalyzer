@@ -404,8 +404,10 @@ class MainWindow(QMainWindow):
         try:
             polyline_rooms = detect_closed_polyline_room_candidates(self._drawing)
             linework_rooms = detect_linework_room_candidates(self._drawing)
-        except ValueError as exc:
-            QMessageBox.warning(self, "部屋候補の検出", str(exc))
+        except Exception as exc:
+            logger.exception("部屋候補の検出に失敗しました")
+            self._log("error", f"部屋候補の検出に失敗: {exc}")
+            QMessageBox.warning(self, "部屋候補の検出", f"解析に失敗しました。\\n{exc}")
             return
         rooms = polyline_rooms + linework_rooms
         self._log("info", f"部屋候補: ポリライン {len(polyline_rooms)} 件 / 線分 {len(linework_rooms)} 件")
