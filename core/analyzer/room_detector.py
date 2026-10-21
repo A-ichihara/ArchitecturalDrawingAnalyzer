@@ -131,14 +131,15 @@ def detect_closed_polyline_room_candidates(
 def detect_linework_room_candidates(
     drawing: Drawing,
     min_area_m2: float = 1.0,
+    gap_tolerance: float = 1.0,
 ) -> List[Room]:
     """Find provisional room polygons enclosed by connected LINE entities.
 
     This supplements closed-polyline detection for drawings whose boundaries
-    are represented as separate line segments. Intersections are noded by
-    Shapely, but endpoints separated by small gaps are not automatically
-    joined. Results are geometric candidates only; text labels and wall
-    thickness are not inferred.
+    are represented as separate line segments. Endpoints within gap_tolerance
+    source drawing units are clustered before polygonization. Use a conservative
+    tolerance: excessive values can incorrectly connect nearby geometry.
+    Results are provisional; text labels and wall thickness are not inferred.
     """
     try:
         threshold = float(min_area_m2)
@@ -146,6 +147,13 @@ def detect_linework_room_candidates(
         raise ValueError("min_area_m2 must be a finite non-negative number") from exc
     if not math.isfinite(threshold) or threshold < 0:
         raise ValueError("min_area_m2 must be a finite non-negative number")
+
+    try:
+        tolerance = float(gap_tolerance)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("gap_tolerance must be a finite non-negative number") from exc
+    if not math.isfinite(tolerance) or tolerance < 0:
+        raise ValueError("gap_tolerance must be a finite non-negative number")
 
     unit = (drawing.units or "").strip().lower()
     area_factor = _AREA_TO_M2.get(unit)
@@ -173,6 +181,54 @@ def detect_linework_room_candidates(
 
     if len(line_records) < 3:
         return []
+
+    # Cluster nearby endpoints, then rebuild each segment using the shared
+    # representative coordinate. This closes tiny endpoint gaps without
+    # buffering or expanding whole wall lines.
+    if tolerance > 0:
+        endpoints = []
+        for _, line in line_records:
+            endpoints.extend([tuple(line.coords[0]), tuple(line.coords[-1])])
+        parent = list(range(len(endpoints)))
+
+        def find(index):
+            while parent[index] != index:
+                parent[index] = parent[parent[index]]
+                index = parent[index]
+            return index
+
+        def union(left, right):
+            root_left, root_right = find(left), find(right)
+            if root_left != root_right:
+                parent[root_right] = root_left
+
+        cells = {}
+        for index, (x, y) in enumerate(endpoints):
+            cell = (math.floor(x / tolerance), math.floor(y / tolerance))
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for other in cells.get((cell[0] + dx, cell[1] + dy), []):
+                        ox, oy = endpoints[other]
+                        if math.hypot(x - ox, y - oy) <= tolerance:
+                            union(index, other)
+            cells.setdefault(cell, []).append(index)
+
+        clusters = {}
+        for index, point in enumerate(endpoints):
+            clusters.setdefault(find(index), []).append(point)
+        representatives = {
+            root: (sum(p[0] for p in points) / len(points),
+                   sum(p[1] for p in points) / len(points))
+            for root, points in clusters.items()
+        }
+        snapped_records = []
+        for line_index, (element_id, line) in enumerate(line_records):
+            start_index, end_index = line_index * 2, line_index * 2 + 1
+            start = representatives[find(start_index)]
+            end = representatives[find(end_index)]
+            if start != end:
+                snapped_records.append((element_id, LineString([start, end])))
+        line_records = snapped_records
 
     try:
         noded_lines = unary_union([line for _, line in line_records])
