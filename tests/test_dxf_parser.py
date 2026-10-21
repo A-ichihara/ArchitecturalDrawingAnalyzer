@@ -360,3 +360,32 @@ def test_dxf_parser_keeps_supported_geometry_when_hatch_is_unsupported(tmp_path)
     assert drawing._meta["unsupported_types"].get("HATCH") == 1
     assert drawing._meta["failed_types"] == {}
 
+def test_dxf_parser_keeps_later_entities_when_one_conversion_fails(tmp_path, monkeypatch):
+    """A single malformed entity must not prevent later valid entities loading."""
+    import ezdxf
+    from core.models.drawing import LineElement
+
+    doc = ezdxf.new("R2010")
+    msp = doc.modelspace()
+    msp.add_line((0, 0), (100, 0), dxfattribs={"layer": "BROKEN"})
+    msp.add_line((200, 0), (300, 0), dxfattribs={"layer": "VALID"})
+    path = tmp_path / "one_entity_conversion_failure.dxf"
+    doc.saveas(path)
+
+    parser = DxfParser()
+    original_convert = parser._convert_entity
+
+    def fail_first_line(entity, index):
+        if entity.dxftype() == "LINE" and entity.dxf.layer == "BROKEN":
+            raise ValueError("simulated malformed entity")
+        return original_convert(entity, index)
+
+    monkeypatch.setattr(parser, "_convert_entity", fail_first_line)
+    drawing = parser.parse(str(path))
+
+    lines = [element for element in drawing.elements if isinstance(element, LineElement)]
+    assert len(lines) == 1
+    assert lines[0].layer == "VALID"
+    assert lines[0].start == pytest.approx([200, 0])
+    assert drawing._meta["failed_types"] == {"LINE": 1}
+    assert drawing._meta["unsupported_types"] == {}
