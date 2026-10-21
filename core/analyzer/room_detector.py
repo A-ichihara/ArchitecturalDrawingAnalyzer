@@ -1,8 +1,9 @@
 """Deterministic first-pass room candidate extraction from DXF geometry.
 
 Recognizes explicit closed straight-sided polylines and polygons enclosed by
-connected LINE entities. Candidates remain provisional: room labels, wall
-thickness, wall centerlines, and automatic gap-closing are not inferred.
+connected LINE entities, with conservative endpoint snapping for tiny gaps.
+Candidates remain provisional: room labels, wall thickness, and wall centerlines
+are not inferred.
 """
 from __future__ import annotations
 
@@ -131,15 +132,16 @@ def detect_closed_polyline_room_candidates(
 def detect_linework_room_candidates(
     drawing: Drawing,
     min_area_m2: float = 1.0,
-    gap_tolerance: float = 1.0,
+    gap_tolerance: float | None = None,
 ) -> List[Room]:
     """Find provisional room polygons enclosed by connected LINE entities.
 
     This supplements closed-polyline detection for drawings whose boundaries
-    are represented as separate line segments. Endpoints within gap_tolerance
-    source drawing units are clustered before polygonization. Use a conservative
-    tolerance: excessive values can incorrectly connect nearby geometry.
-    Results are provisional; text labels and wall thickness are not inferred.
+    are represented as separate line segments. By default, endpoint snapping
+    uses a tolerance equivalent to 1 mm in the drawing's source units. Pass an
+    explicit gap_tolerance to override it. Excessive tolerances can incorrectly
+    connect nearby geometry. Results are provisional; text labels and wall
+    thickness are not inferred.
     """
     try:
         threshold = float(min_area_m2)
@@ -148,14 +150,18 @@ def detect_linework_room_candidates(
     if not math.isfinite(threshold) or threshold < 0:
         raise ValueError("min_area_m2 must be a finite non-negative number")
 
-    try:
-        tolerance = float(gap_tolerance)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("gap_tolerance must be a finite non-negative number") from exc
+    unit = (drawing.units or "").strip().lower()
+    if gap_tolerance is None:
+        # Keep the default geometric tolerance consistent across unit systems.
+        tolerance = 0.001 / math.sqrt(_AREA_TO_M2.get(unit, float("nan")))
+    else:
+        try:
+            tolerance = float(gap_tolerance)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("gap_tolerance must be a finite non-negative number") from exc
     if not math.isfinite(tolerance) or tolerance < 0:
         raise ValueError("gap_tolerance must be a finite non-negative number")
 
-    unit = (drawing.units or "").strip().lower()
     area_factor = _AREA_TO_M2.get(unit)
     if area_factor is None:
         raise ValueError(
