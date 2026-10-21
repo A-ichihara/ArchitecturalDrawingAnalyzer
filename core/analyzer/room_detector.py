@@ -151,9 +151,16 @@ def detect_linework_room_candidates(
         raise ValueError("min_area_m2 must be a finite non-negative number")
 
     unit = (drawing.units or "").strip().lower()
+    area_factor = _AREA_TO_M2.get(unit)
+    if area_factor is None:
+        raise ValueError(
+            f"Unsupported drawing area unit {drawing.units!r}; "
+            f"supported units: {', '.join(sorted(_AREA_TO_M2))}"
+        )
+
     if gap_tolerance is None:
         # Keep the default geometric tolerance consistent across unit systems.
-        tolerance = 0.001 / math.sqrt(_AREA_TO_M2.get(unit, float("nan")))
+        tolerance = 0.001 / math.sqrt(area_factor)
     else:
         try:
             tolerance = float(gap_tolerance)
@@ -161,13 +168,6 @@ def detect_linework_room_candidates(
             raise ValueError("gap_tolerance must be a finite non-negative number") from exc
     if not math.isfinite(tolerance) or tolerance < 0:
         raise ValueError("gap_tolerance must be a finite non-negative number")
-
-    area_factor = _AREA_TO_M2.get(unit)
-    if area_factor is None:
-        raise ValueError(
-            f"Unsupported drawing area unit {drawing.units!r}; "
-            f"supported units: {', '.join(sorted(_AREA_TO_M2))}"
-        )
 
     line_records = []
     for elem in drawing.elements:
