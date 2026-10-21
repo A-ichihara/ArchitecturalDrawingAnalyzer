@@ -73,7 +73,14 @@ class DxfParser(IDrawingParser):
             return drawing
 
         dxf_version = doc.dxfversion
-        dxf_insunits = int(doc.header.get("$INSUNITS", 0) or 0)
+        raw_insunits = doc.header.get("$INSUNITS", 0)
+        try:
+            dxf_insunits = int(raw_insunits or 0)
+        except (TypeError, ValueError, OverflowError):
+            # Malformed unit metadata must not prevent otherwise readable
+            # geometry from loading; use the documented fallback instead.
+            logger.warning("DXF $INSUNITS が不正なため既定単位を使用します: %r", raw_insunits)
+            dxf_insunits = 0
         insunits_to_unit = {1: "in", 2: "ft", 4: "mm", 5: "cm", 6: "m"}
         inferred_units = insunits_to_unit.get(dxf_insunits)
         units_source = "explicit_argument" if units_override else (
