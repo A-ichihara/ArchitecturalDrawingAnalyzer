@@ -690,3 +690,23 @@ def test_deduplication_keeps_adjacent_rooms_with_shared_boundary():
     )
     assert len(combined) == 2
     assert sorted(room.area_m2 for room in combined) == pytest.approx([20.0, 20.0])
+
+
+def test_deduplication_keeps_adjacent_rooms_and_removes_only_matching_linework():
+    """A coincident LINE outline is redundant, but its neighbor is not."""
+    drawing = _drawing([
+        _polyline("P", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]]),
+        _line("BOTTOM", [0, 0], [10000, 0]),
+        _line("RIGHT", [10000, 0], [10000, 4000]),
+        _line("TOP", [10000, 4000], [0, 4000]),
+        _line("LEFT", [0, 4000], [0, 0]),
+        _line("PARTITION", [5000, 0], [5000, 4000]),
+    ])
+    polyline_rooms = detect_closed_polyline_room_candidates(drawing)
+    linework_rooms = detect_linework_room_candidates(drawing)
+    combined = deduplicate_room_candidates(polyline_rooms, linework_rooms)
+    assert len(polyline_rooms) == 1
+    assert len(linework_rooms) == 2
+    assert len(combined) == 2
+    assert combined[0] is polyline_rooms[0]
+    assert sorted(room.area_m2 for room in combined) == pytest.approx([20.0, 20.0])
