@@ -205,10 +205,28 @@ def detect_linework_room_candidates(
                 index = parent[index]
             return index
 
+        cluster_members = {index: [index] for index in range(len(endpoints))}
+
         def union(left, right):
             root_left, root_right = find(left), find(right)
-            if root_left != root_right:
-                parent[root_right] = root_left
+            if root_left == root_right:
+                return
+            # Prevent single-linkage chaining: every pair of endpoints in the
+            # merged cluster must remain within the configured tolerance.
+            left_members = cluster_members[root_left]
+            right_members = cluster_members[root_right]
+            if any(
+                math.hypot(
+                    endpoints[left_index][0] - endpoints[right_index][0],
+                    endpoints[left_index][1] - endpoints[right_index][1],
+                ) > tolerance
+                for left_index in left_members
+                for right_index in right_members
+            ):
+                return
+            parent[root_right] = root_left
+            left_members.extend(right_members)
+            del cluster_members[root_right]
 
         cells = {}
         for index, (x, y) in enumerate(endpoints):

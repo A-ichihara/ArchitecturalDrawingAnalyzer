@@ -550,3 +550,18 @@ def test_default_gap_tolerance_is_one_millimetre_for_other_supported_units(
         "ft": 0.3048**2,
     }[units]
     assert rooms[0].area_m2 == pytest.approx(expected_area_m2, rel=0.01)
+
+
+def test_endpoint_snapping_does_not_chain_points_beyond_tolerance():
+    # The distractor endpoint is within tolerance of both room corners, but
+    # the two corners are farther apart than tolerance. It must not bridge
+    # the gap and manufacture a closed room.
+    drawing = _drawing([
+        _line("BOTTOM", [0, 0], [5000, 0]),
+        _line("RIGHT", [5001.5, 0], [5001.5, 4000]),
+        _line("TOP", [5001.5, 4000], [0, 4000]),
+        _line("LEFT", [0, 4000], [0, 0]),
+        _line("DISTRACTOR", [5000.75, 0], [5000.75, -1000]),
+    ])
+
+    assert detect_linework_room_candidates(drawing, gap_tolerance=1.0) == []
