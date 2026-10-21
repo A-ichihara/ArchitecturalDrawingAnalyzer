@@ -469,3 +469,55 @@ def test_room_name_association_skips_non_finite_text_coordinates(point):
     assert len(associated) == 1
     assert associated[0].room_name == ""
 
+def test_room_name_association_does_not_choose_between_two_labels():
+    drawing = _drawing([
+        _polyline("ROOM", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]]),
+        _text("LABEL_A", "事務室", [2000, 2000]),
+        _text("LABEL_B", "倉庫", [3000, 2000]),
+    ])
+    rooms = detect_closed_polyline_room_candidates(drawing)
+
+    associated = associate_room_names(drawing, rooms)
+
+    assert len(associated) == 1
+    assert associated[0].room_name == ""
+    assert "room_name_source_element_id" not in associated[0].properties
+
+
+def test_room_name_association_ignores_text_on_candidate_boundary():
+    drawing = _drawing([
+        _polyline("ROOM", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]]),
+        _text("LABEL", "事務室", [0, 2000]),
+    ])
+    rooms = detect_closed_polyline_room_candidates(drawing)
+
+    associated = associate_room_names(drawing, rooms)
+
+    assert associated[0].room_name == ""
+
+
+def test_room_name_association_ignores_numeric_dimension_text():
+    drawing = _drawing([
+        _polyline("ROOM", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]]),
+        _text("AREA", "20.00㎡", [2500, 2000]),
+    ])
+    rooms = detect_closed_polyline_room_candidates(drawing)
+
+    associated = associate_room_names(drawing, rooms)
+
+    assert associated[0].room_name == ""
+
+
+def test_room_name_association_does_not_guess_for_overlapping_candidates():
+    drawing = _drawing([
+        _polyline("ROOM_A", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]]),
+        _polyline("ROOM_B", [[1000, 1000], [6000, 1000], [6000, 5000], [1000, 5000]]),
+        _text("LABEL", "事務室", [2500, 2000]),
+    ])
+    rooms = detect_closed_polyline_room_candidates(drawing)
+
+    associated = associate_room_names(drawing, rooms)
+
+    assert len(associated) == 2
+    assert all(room.room_name == "" for room in associated)
+
