@@ -24,6 +24,10 @@ from core.drawing_viewer.renderers import DxfRenderer
 from core.parser.dxf_parser import DxfParser
 from core.models.drawing import Drawing, DrawingElement
 from core.analyzer.drawing_analyzer import DrawingAnalyzer
+from core.analyzer.room_detector import (
+    detect_closed_polyline_room_candidates,
+    detect_linework_room_candidates,
+)
 
 from ui.panels.layer_panel import LayerPanel
 from ui.panels.property_panel import PropertyPanel
@@ -134,6 +138,12 @@ class MainWindow(QMainWindow):
         self._act_open.setStatusTip("DXFファイルを開いて図面を表示します")
         self._act_open.triggered.connect(self._open_dxf)
         toolbar.addAction(self._act_open)
+
+        self._act_detect_rooms = QAction("部屋候補を検出", self)
+        self._act_detect_rooms.setEnabled(False)
+        self._act_detect_rooms.setStatusTip("閉じたポリライン・接続線分から仮の部屋領域を抽出します")
+        self._act_detect_rooms.triggered.connect(self._detect_room_candidates)
+        toolbar.addAction(self._act_detect_rooms)
 
         toolbar.addSeparator()
 
@@ -337,6 +347,7 @@ class MainWindow(QMainWindow):
         self._current_file = file_path
         self._update_title()
         self._drawing = drawing
+        self._act_detect_rooms.setEnabled(True)
 
         # レンダリング
         self._renderer.render(drawing, self._scene)
@@ -384,6 +395,33 @@ class MainWindow(QMainWindow):
             f"DXFファイルを読み込めませんでした。\n\n"
             f"原因：\nこのDXF形式は現在対応していない可能性があります。\n\n"
             f"詳細：\n{message}",
+        )
+
+    def _detect_room_candidates(self) -> None:
+        """現在のDXFから暫定的な閉領域候補を抽出して一覧表示する。"""
+        if self._drawing is None:
+            return
+        try:
+            polyline_rooms = detect_closed_polyline_room_candidates(self._drawing)
+            linework_rooms = detect_linework_room_candidates(self._drawing)
+        except ValueError as exc:
+            QMessageBox.warning(self, "部屋候補の検出", str(exc))
+            return
+        rooms = polyline_rooms + linework_rooms
+        self._log("info", f"部屋候補: ポリライン {len(polyline_rooms)} 件 / 線分 {len(linework_rooms)} 件")
+        if not rooms:
+            QMessageBox.information(self, "部屋候補の検出", "閉じた領域候補は見つかりませんでした。")
+            return
+        lines = [f"{index}. {room.area_m2:.2f} ㎡（{room.properties[\'candidate_type\']}）"
+                 for index, room in enumerate(rooms, start=1)]
+        preview = "\\n".join(lines[:30])
+        if len(lines) > 30:
+            preview += f"\\n…ほか {len(lines) - 30} 件"
+        QMessageBox.information(
+            self, "部屋候補の検出",
+            f"暫定的な閉領域候補: {len(rooms)} 件\\n"
+            "※ 部屋名・壁芯は未判定です。重複候補が含まれる場合があります。\\n\\n"
+            + preview,
         )
 
     def _fit_view(self) -> None:
