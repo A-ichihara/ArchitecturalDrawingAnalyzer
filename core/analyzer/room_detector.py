@@ -238,14 +238,47 @@ def detect_linework_room_candidates(
 
     try:
         noded_lines = unary_union([line for _, line in line_records])
-        polygons = polygonize(noded_lines)
+        polygons = list(polygonize(noded_lines))
     except (TypeError, ValueError, OverflowError):
         return []
 
-    candidates: List[Room] = []
+    # Room.boundary stores one exterior ring only. Nested loops (often caused
+    # by wall thickness or shafts) can produce polygons with holes and a
+    # second polygon inside the hole. Emitting either would make the stored
+    # boundary disagree with area_m2 or create a misleading room candidate.
+    # Conservatively skip both members of any nested pair.
+    nested_indices = {
+        index for index, polygon in enumerate(polygons) if polygon.interiors
+    }
+    exterior_shells = []
     for polygon in polygons:
         try:
-            if polygon.is_empty or not polygon.is_valid:
+            exterior_shells.append(Polygon(polygon.exterior))
+        except (TypeError, ValueError):
+            exterior_shells.append(None)
+    for left_index, left in enumerate(polygons):
+        if left.is_empty or left.area <= 0:
+            continue
+        try:
+            left_point = left.representative_point()
+        except (TypeError, ValueError):
+            continue
+        for right_index, right_shell in enumerate(exterior_shells):
+            if left_index == right_index or right_shell is None:
+                continue
+            if right_shell.area <= left.area:
+                continue
+            try:
+                if right_shell.contains(left_point):
+                    nested_indices.add(left_index)
+                    nested_indices.add(right_index)
+            except (TypeError, ValueError):
+                continue
+
+    candidates: List[Room] = []
+    for polygon_index, polygon in enumerate(polygons):
+        try:
+            if polygon_index in nested_indices or polygon.is_empty or not polygon.is_valid:
                 continue
             area_m2 = float(polygon.area) * area_factor
             if not math.isfinite(area_m2) or area_m2 < threshold:
