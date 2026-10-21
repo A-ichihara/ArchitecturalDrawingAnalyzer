@@ -260,3 +260,36 @@ def test_linework_detector_rejects_invalid_gap_tolerance():
     for invalid in (-1, float("nan"), float("inf"), "invalid", None):
         with pytest.raises(ValueError, match="gap_tolerance"):
             detect_linework_room_candidates(drawing, gap_tolerance=invalid)
+
+
+
+def test_default_gap_tolerance_is_equivalent_to_one_millimetre_for_metre_drawings():
+    drawing = _drawing([
+        _line("L1", [0, 0], [5, 0]),
+        _line("L2", [5.0004, 0], [5, 4]),
+        _line("L3", [5, 4], [0, 4]),
+        _line("L4", [0, 4], [0, 0.0003]),
+    ], units="m")
+    rooms = detect_linework_room_candidates(drawing)
+    assert len(rooms) == 1
+    assert rooms[0].area_m2 == pytest.approx(20.0, rel=0.001)
+
+
+def test_linework_detector_does_not_close_gaps_larger_than_tolerance():
+    drawing = _drawing([
+        _line("L1", [0, 0], [5000, 0]),
+        _line("L2", [5002, 0], [5000, 4000]),
+        _line("L3", [5000, 4000], [0, 4000]),
+        _line("L4", [0, 4000], [0, 0]),
+    ])
+    assert detect_linework_room_candidates(drawing, gap_tolerance=1.0) == []
+
+
+def test_linework_detector_zero_tolerance_disables_endpoint_snapping():
+    drawing = _drawing([
+        _line("L1", [0, 0], [5000, 0]),
+        _line("L2", [5000.4, 0], [5000, 4000]),
+        _line("L3", [5000, 4000], [0, 4000]),
+        _line("L4", [0, 4000], [0, 0]),
+    ])
+    assert detect_linework_room_candidates(drawing, gap_tolerance=0) == []
