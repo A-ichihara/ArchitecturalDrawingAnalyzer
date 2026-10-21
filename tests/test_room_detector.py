@@ -241,3 +241,22 @@ def test_deduplication_preserves_adjacent_room():
     )
     assert len(combined) == 2
     assert sorted(room.area_m2 for room in combined) == pytest.approx([20.0, 20.0])
+
+
+def test_linework_detector_closes_small_endpoint_gaps():
+    drawing = _drawing([
+        _line("L1", [0, 0], [5000, 0]),
+        _line("L2", [5000.4, 0], [5000, 4000]),
+        _line("L3", [5000, 4000], [0, 4000]),
+        _line("L4", [0, 4000], [0, 0.3]),
+    ])
+    rooms = detect_linework_room_candidates(drawing, gap_tolerance=1.0)
+    assert len(rooms) == 1
+    assert rooms[0].area_m2 == pytest.approx(20.0, rel=0.001)
+
+
+def test_linework_detector_rejects_invalid_gap_tolerance():
+    drawing = _drawing([])
+    for invalid in (-1, float("nan"), float("inf"), "invalid", None):
+        with pytest.raises(ValueError, match="gap_tolerance"):
+            detect_linework_room_candidates(drawing, gap_tolerance=invalid)
