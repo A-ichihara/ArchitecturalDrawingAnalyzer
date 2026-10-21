@@ -117,8 +117,12 @@ class DxfRenderer:
     def _get_pen(self, element: DrawingElement, width: float = DEFAULT_LINE_WIDTH) -> QPen:
         """要素のカラーコードから QPen を生成する。"""
         color_code = element.color
-        if color_code is not None and int(color_code) in _ACI_COLORS:
-            color = QColor(_ACI_COLORS[int(color_code)])
+        try:
+            aci = int(color_code) if color_code is not None else None
+        except (TypeError, ValueError, OverflowError):
+            aci = None
+        if aci in _ACI_COLORS:
+            color = QColor(_ACI_COLORS[aci])
         else:
             color = DEFAULT_LINE_COLOR
 
