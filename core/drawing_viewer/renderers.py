@@ -252,6 +252,7 @@ class DxfRenderer:
         x = element.insert_point[0]
         y = self._y(element.insert_point[1])
         s = 50.0  # ブロック挿入点用の標準マーカーサイズ (50mm)
+        # INSERTは参照情報のみ保持しており、現状はブロック本体でなくマーカーを描画する。
         pen = self._get_pen(element)
 
         l1 = QGraphicsLineItem(x - s, y, x + s, y)
