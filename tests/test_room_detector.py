@@ -199,3 +199,12 @@ def test_linework_detector_skips_malformed_and_zero_length_lines():
     rooms = detect_linework_room_candidates(drawing)
     assert len(rooms) == 1
     assert rooms[0].area_m2 == pytest.approx(20.0)
+
+
+def test_drawing_element_lookup_returns_matching_element_or_none():
+    first = _line("LINE_1", [0, 0], [1000, 0])
+    second = _polyline("POLY_2", [[0, 0], [1000, 0], [1000, 1000]])
+    drawing = _drawing([first, second])
+    assert drawing.get_element_by_id("LINE_1") is first
+    assert drawing.get_element_by_id("POLY_2") is second
+    assert drawing.get_element_by_id("MISSING") is None
