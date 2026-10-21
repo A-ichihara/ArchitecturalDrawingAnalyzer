@@ -3,6 +3,7 @@ import pytest
 from core.analyzer.room_detector import (
     detect_closed_polyline_room_candidates,
     detect_linework_room_candidates,
+    deduplicate_room_candidates,
 )
 from core.models.drawing import Drawing, LineElement, PolylineElement
 
@@ -208,3 +209,35 @@ def test_drawing_element_lookup_returns_matching_element_or_none():
     assert drawing.get_element_by_id("LINE_1") is first
     assert drawing.get_element_by_id("POLY_2") is second
     assert drawing.get_element_by_id("MISSING") is None
+
+
+def test_deduplication_keeps_polyline_and_removes_identical_linework():
+    drawing = _drawing([
+        _polyline("P", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]]),
+        _line("L1", [0, 0], [5000, 0]),
+        _line("L2", [5000, 0], [5000, 4000]),
+        _line("L3", [5000, 4000], [0, 4000]),
+        _line("L4", [0, 4000], [0, 0]),
+    ])
+    polyline_rooms = detect_closed_polyline_room_candidates(drawing)
+    linework_rooms = detect_linework_room_candidates(drawing)
+    assert len(polyline_rooms) == len(linework_rooms) == 1
+    combined = deduplicate_room_candidates(polyline_rooms, linework_rooms)
+    assert len(combined) == 1
+    assert combined[0] is polyline_rooms[0]
+
+
+def test_deduplication_preserves_adjacent_room():
+    drawing = _drawing([
+        _polyline("P", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]]),
+        _line("L1", [5000, 0], [10000, 0]),
+        _line("L2", [10000, 0], [10000, 4000]),
+        _line("L3", [10000, 4000], [5000, 4000]),
+        _line("L4", [5000, 4000], [5000, 0]),
+    ])
+    combined = deduplicate_room_candidates(
+        detect_closed_polyline_room_candidates(drawing),
+        detect_linework_room_candidates(drawing),
+    )
+    assert len(combined) == 2
+    assert sorted(room.area_m2 for room in combined) == pytest.approx([20.0, 20.0])
