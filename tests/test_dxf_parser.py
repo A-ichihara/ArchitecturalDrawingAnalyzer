@@ -94,3 +94,68 @@ def test_dxf_parser_layer_info():
     assert "STRUCTURE" in layer_names
     assert "FURNITURE" in layer_names
 
+def test_dxf_text_is_associated_with_room_after_real_parse(tmp_path):
+    """DXF parsing and geometric room-label association work together."""
+    import ezdxf
+    from core.analyzer.room_detector import (
+        associate_room_names,
+        detect_closed_polyline_room_candidates,
+    )
+
+    doc = ezdxf.new("R2010")
+    doc.header["$INSUNITS"] = 4  # millimetres
+    msp = doc.modelspace()
+    msp.add_lwpolyline(
+        [(0, 0), (5000, 0), (5000, 4000), (0, 4000)],
+        close=True,
+        dxfattribs={"layer": "ROOM_BOUNDARY"},
+    )
+    msp.add_text(
+        "事務室",
+        dxfattribs={"insert": (2500, 2000), "height": 250, "layer": "ROOM_LABELS"},
+    )
+    path = tmp_path / "room_label_text.dxf"
+    doc.saveas(path)
+
+    drawing = DxfParser().parse(str(path))
+    rooms = detect_closed_polyline_room_candidates(drawing)
+    associated = associate_room_names(drawing, rooms)
+
+    assert drawing.units == "mm"
+    assert len(associated) == 1
+    assert associated[0].area_m2 == pytest.approx(20.0)
+    assert associated[0].room_name == "事務室"
+    assert associated[0].properties["room_name_source_element_id"].startswith("TEXT_")
+
+
+def test_dxf_mtext_paragraph_is_normalized_before_room_association(tmp_path):
+    """MTEXT paragraph breaks should not prevent a Japanese room label match."""
+    import ezdxf
+    from core.analyzer.room_detector import (
+        associate_room_names,
+        detect_closed_polyline_room_candidates,
+    )
+
+    doc = ezdxf.new("R2010")
+    doc.header["$INSUNITS"] = 4
+    msp = doc.modelspace()
+    msp.add_lwpolyline(
+        [(0, 0), (5000, 0), (5000, 4000), (0, 4000)],
+        close=True,
+        dxfattribs={"layer": "ROOM_BOUNDARY"},
+    )
+    msp.add_mtext(
+        "会議室\\P（受付）",
+        dxfattribs={"insert": (2500, 2000), "char_height": 250, "layer": "ROOM_LABELS"},
+    )
+    path = tmp_path / "room_label_mtext.dxf"
+    doc.saveas(path)
+
+    drawing = DxfParser().parse(str(path))
+    rooms = detect_closed_polyline_room_candidates(drawing)
+    associated = associate_room_names(drawing, rooms)
+
+    assert len(associated) == 1
+    assert associated[0].room_name == "会議室 （受付）"
+    assert associated[0].properties["room_name_source_element_id"].startswith("MTEXT_")
+
