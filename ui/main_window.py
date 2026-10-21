@@ -335,6 +335,7 @@ class MainWindow(QMainWindow):
             return
 
         self._act_open.setEnabled(False)
+        self._act_detect_rooms.setEnabled(False)
         filename = os.path.basename(file_path)
         self._label_file.setText(f"ファイル：{filename}")
         self._label_status.setText("状態：読み込み中...")
@@ -361,6 +362,7 @@ class MainWindow(QMainWindow):
         self._worker = None
         self._load_thread = None
         self._act_open.setEnabled(True)
+        self._act_detect_rooms.setEnabled(self._drawing is not None)
 
     def _on_load_finished(self, file_path: str, drawing: Drawing) -> None:
         """DXF読み込み完了時の処理。"""
