@@ -192,3 +192,17 @@ def test_dxf_parser_explicit_units_override_insunits(tmp_path):
     assert drawing.units == "mm"
     assert drawing._meta["units_source"] == "explicit_argument"
 
+def test_dxf_parser_defaults_to_mm_when_insunits_is_unitless(tmp_path):
+    import ezdxf
+
+    doc = ezdxf.new("R2010")
+    doc.header["$INSUNITS"] = 0
+    doc.modelspace().add_line((0, 0), (1000, 0))
+    path = tmp_path / "units_default.dxf"
+    doc.saveas(path)
+
+    drawing = DxfParser().parse(str(path))
+
+    assert drawing.units == "mm"
+    assert drawing._meta["units_source"] == "default_mm"
+
