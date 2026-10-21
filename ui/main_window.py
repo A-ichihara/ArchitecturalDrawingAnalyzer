@@ -25,6 +25,7 @@ from core.parser.dxf_parser import DxfParser
 from core.models.drawing import Drawing, DrawingElement
 from core.analyzer.drawing_analyzer import DrawingAnalyzer
 from core.analyzer.room_detector import (
+    associate_room_names,
     detect_closed_polyline_room_candidates,
     detect_linework_room_candidates,
     deduplicate_room_candidates,
@@ -467,12 +468,14 @@ class MainWindow(QMainWindow):
     def _on_room_detection_finished(self, polyline_rooms: list, linework_rooms: list) -> None:
         self._label_status.setText("状態：部屋候補の解析完了")
         rooms = deduplicate_room_candidates(polyline_rooms, linework_rooms)
+        if self._drawing is not None:
+            rooms = associate_room_names(self._drawing, rooms)
         self._log("info", f"部屋候補: ポリライン {len(polyline_rooms)} 件 / 線分 {len(linework_rooms)} 件")
         if not rooms:
             QMessageBox.information(self, "部屋候補の検出", "閉じた領域候補は見つかりませんでした。")
             return
         lines = [
-            f"{index}. {room.area_m2:.2f} ㎡（{room.properties.get('candidate_type', 'unknown')}）"
+            f"{index}. {room.room_name or '（部屋名未判定）'} / {room.area_m2:.2f} ㎡（{room.properties.get('candidate_type', 'unknown')}）"
             for index, room in enumerate(rooms, start=1)
         ]
         preview = "\n".join(lines[:30])
@@ -481,7 +484,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self, "部屋候補の検出",
             f"暫定的な閉領域候補: {len(rooms)} 件\n"
-            "※ 部屋名・壁芯は未判定です。部分的に重なる候補は残る場合があります。\n\n"
+            "※ 部屋名は領域内に文字が1つだけある場合に限り暫定表示します。壁芯は未判定で、部分的に重なる候補は残る場合があります。\n\n"
             + preview,
         )
 
