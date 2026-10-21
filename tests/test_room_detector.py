@@ -5,7 +5,7 @@ from core.analyzer.room_detector import (
     detect_linework_room_candidates,
     deduplicate_room_candidates,
 )
-from core.models.drawing import Drawing, LineElement, PolylineElement
+from core.models.drawing import Drawing, LineElement, PolylineElement, TextElement
 
 
 def _polyline(element_id, points, *, closed=True, bulges=None, layer="ROOM_BOUNDARY"):
@@ -320,3 +320,59 @@ def test_none_gap_tolerance_uses_unit_aware_default():
         _line("L4", [0, 4000], [0, 0.3]),
     ])
     assert len(detect_linework_room_candidates(drawing, gap_tolerance=None)) == 1
+
+
+
+def _text(element_id, text, point):
+    return TextElement(
+        element_id=element_id,
+        element_type="TEXT",
+        layer="ROOM_LABELS",
+        text=text,
+        insertion_point=point,
+    )
+
+
+def test_associates_one_text_label_inside_room_candidate():
+    drawing = _drawing([
+        _polyline("ROOM", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]]),
+        _text("LABEL", "事務室", [2500, 2000]),
+    ])
+    rooms = detect_closed_polyline_room_candidates(drawing)
+    associated = associate_room_names(drawing, rooms)
+    assert associated[0].room_name == "事務室"
+    assert associated[0].properties["room_name_source_element_id"] == "LABEL"
+    assert rooms[0].room_name == ""  # original candidate is not mutated
+
+
+def test_room_name_association_leaves_multiple_labels_unnamed():
+    drawing = _drawing([
+        _polyline("ROOM", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]]),
+        _text("LABEL1", "事務室", [2000, 2000]),
+        _text("LABEL2", "管理室", [3000, 2000]),
+    ])
+    rooms = detect_closed_polyline_room_candidates(drawing)
+    associated = associate_room_names(drawing, rooms)
+    assert associated[0].room_name == ""
+
+
+def test_room_name_association_ignores_numeric_text_and_boundary_points():
+    drawing = _drawing([
+        _polyline("ROOM", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]]),
+        _text("AREA", "20.00㎡", [2000, 2000]),
+        _text("EDGE", "事務室", [0, 2000]),
+    ])
+    rooms = detect_closed_polyline_room_candidates(drawing)
+    associated = associate_room_names(drawing, rooms)
+    assert associated[0].room_name == ""
+
+
+def test_room_name_association_does_not_guess_for_overlapping_candidates():
+    drawing = _drawing([
+        _polyline("ROOM1", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]]),
+        _polyline("ROOM2", [[1000, 1000], [4000, 1000], [4000, 3000], [1000, 3000]]),
+        _text("LABEL", "事務室", [2500, 2000]),
+    ])
+    rooms = detect_closed_polyline_room_candidates(drawing)
+    associated = associate_room_names(drawing, rooms)
+    assert all(room.room_name == "" for room in associated)
