@@ -269,6 +269,10 @@ class Drawing:
     units: str = "mm"
     elements: List[DrawingElement] = field(default_factory=list)
 
+    def get_element_by_id(self, element_id: str) -> Optional[DrawingElement]:
+        """要素IDから図面要素を検索する。見つからない場合はNone。"""
+        return next((element for element in self.elements if element.element_id == element_id), None)
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "drawing_id": self.drawing_id,
