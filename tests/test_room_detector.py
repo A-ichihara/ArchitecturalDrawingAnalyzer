@@ -768,3 +768,51 @@ def test_deduplication_removes_duplicate_linework_candidates_too():
     combined = deduplicate_room_candidates([], [rooms[0], duplicate])
     assert len(combined) == 1
     assert combined[0] is rooms[0]
+
+
+
+def test_room_name_association_does_not_collapse_candidates_with_duplicate_ids():
+    """Distinct overlapping candidates remain ambiguous even if their IDs match."""
+    drawing = _drawing([
+        TextElement(
+            element_id="LABEL",
+            element_type="TEXT",
+            layer="ROOM_LABELS",
+            text="会議室",
+            insertion_point=[2500, 2000],
+        )
+    ])
+    first = RoomLike = detect_closed_polyline_room_candidates(
+        _drawing([_polyline("A", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]])])
+    )[0]
+    second = replace(first, room_id=first.room_id)
+    associated = associate_room_names(drawing, [first, second])
+    assert len(associated) == 2
+    assert all(room.room_name == "" for room in associated)
+
+
+def test_room_name_association_normalizes_mtext_line_break_and_ignores_numeric_text():
+    """MTEXT paragraph codes are normalized; dimensions are not room names."""
+    drawing = _drawing([
+        _polyline("ROOM", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]]),
+        TextElement(
+            element_id="AREA",
+            element_type="TEXT",
+            layer="DIMENSIONS",
+            text="20.00㎡",
+            insertion_point=[1000, 1000],
+        ),
+        TextElement(
+            element_id="NAME",
+            element_type="MTEXT",
+            layer="ROOM_LABELS",
+            text="機械室\\P空調機械",
+            insertion_point=[2500, 2000],
+        ),
+    ])
+    rooms = associate_room_names(
+        drawing, detect_closed_polyline_room_candidates(drawing)
+    )
+    assert len(rooms) == 1
+    assert rooms[0].room_name == "機械室 空調機械"
+    assert rooms[0].properties["room_name_source_element_id"] == "NAME"
