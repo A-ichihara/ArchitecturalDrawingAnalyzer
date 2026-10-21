@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 from core.analyzer.room_detector import (
@@ -324,10 +326,10 @@ def test_none_gap_tolerance_uses_unit_aware_default():
 
 
 
-def _text(element_id, text, point):
+def _text(element_id, text, point, *, element_type="TEXT"):
     return TextElement(
         element_id=element_id,
-        element_type="TEXT",
+        element_type=element_type,
         layer="ROOM_LABELS",
         text=text,
         insertion_point=point,
@@ -377,3 +379,38 @@ def test_room_name_association_does_not_guess_for_overlapping_candidates():
     rooms = detect_closed_polyline_room_candidates(drawing)
     associated = associate_room_names(drawing, rooms)
     assert all(room.room_name == "" for room in associated)
+
+
+
+def test_associates_mtext_after_normalizing_paragraph_breaks():
+    drawing = _drawing([
+        _polyline("ROOM", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]]),
+        _text("MTEXT_LABEL", "事務室\\P（受付）", [2500, 2000], element_type="MTEXT"),
+    ])
+    rooms = detect_closed_polyline_room_candidates(drawing)
+    associated = associate_room_names(drawing, rooms)
+    assert associated[0].room_name == "事務室 （受付）"
+    assert associated[0].properties["room_name_source_element_id"] == "MTEXT_LABEL"
+
+
+def test_room_name_association_handles_duplicate_room_ids_independently():
+    drawing = _drawing([
+        _polyline("ROOM1", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]]),
+        _polyline("ROOM2", [[6000, 0], [11000, 0], [11000, 4000], [6000, 4000]]),
+        _text("LABEL1", "事務室", [2500, 2000]),
+        _text("LABEL2", "会議室", [8500, 2000]),
+    ])
+    rooms = detect_closed_polyline_room_candidates(drawing)
+    rooms = [replace(room, room_id="DUPLICATE_ID") for room in rooms]
+    associated = associate_room_names(drawing, rooms)
+    assert [room.room_name for room in associated] == ["事務室", "会議室"]
+
+
+def test_room_name_association_skips_malformed_text_coordinates():
+    drawing = _drawing([
+        _polyline("ROOM", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]]),
+        _text("BAD_LABEL", "事務室", ["not-a-coordinate", 2000]),
+    ])
+    rooms = detect_closed_polyline_room_candidates(drawing)
+    associated = associate_room_names(drawing, rooms)
+    assert associated[0].room_name == ""
