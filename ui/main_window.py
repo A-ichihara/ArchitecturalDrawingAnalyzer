@@ -455,7 +455,7 @@ class MainWindow(QMainWindow):
     def _on_room_detection_error(self, message: str) -> None:
         self._label_status.setText("状態：部屋候補の解析失敗")
         self._log("error", f"部屋候補の検出に失敗: {message}")
-        QMessageBox.warning(self, "部屋候補の検出", f"解析に失敗しました。\\n{message}")
+        QMessageBox.warning(self, "部屋候補の検出", f"解析に失敗しました。\n{message}")
 
     @Slot(object, object)
     def _on_room_detection_finished(self, polyline_rooms: list, linework_rooms: list) -> None:
