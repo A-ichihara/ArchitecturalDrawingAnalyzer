@@ -445,3 +445,22 @@ def test_renderer_continues_after_unexpected_element_error(monkeypatch):
     assert len(base_group.childItems()) == 1
     assert base_group.childItems()[0].data(Qt.ItemDataRole.UserRole) == "good"
     assert app is not None
+
+
+@pytest.mark.parametrize("invalid_color", [None, "not-an-integer", float("inf")])
+def test_renderer_uses_default_color_for_invalid_aci_values(invalid_color):
+    """Invalid DXF color metadata must not crash pen creation."""
+    from core.drawing_viewer.renderers import DxfRenderer, DEFAULT_LINE_COLOR
+    from core.models.drawing import LineElement
+
+    element = LineElement(
+        element_id="invalid-color",
+        element_type="LINE",
+        color=invalid_color,
+        start=[0, 0],
+        end=[1, 1],
+    )
+
+    pen = DxfRenderer()._get_pen(element)
+
+    assert pen.color() == DEFAULT_LINE_COLOR
