@@ -8,12 +8,14 @@ are not inferred.
 from __future__ import annotations
 
 import math
+import re
+from dataclasses import replace
 from typing import List
 
-from shapely.geometry import LineString, Polygon
+from shapely.geometry import LineString, Point, Polygon
 from shapely.ops import polygonize, unary_union
 
-from core.models.drawing import Drawing, LineElement, PolylineElement
+from core.models.drawing import Drawing, LineElement, PolylineElement, TextElement
 from core.models.room import Room
 
 
@@ -345,3 +347,69 @@ def deduplicate_room_candidates(polyline_rooms: List[Room], linework_rooms: List
             pass
         accepted.append(room)
     return accepted
+
+
+
+def associate_room_names(drawing: Drawing, rooms: List[Room]) -> List[Room]:
+    """Conservatively associate a single text label with each room candidate.
+
+    A label is accepted only when its insertion point lies strictly inside
+    exactly one candidate polygon, its text is not numeric/dimension-like, and
+    that room contains exactly one eligible label. Ambiguous cases remain
+    unnamed. This is a first-pass geometric association, not semantic room-name
+    recognition.
+    """
+    text_records = []
+    for element in drawing.elements:
+        if not isinstance(element, TextElement):
+            continue
+        label = re.sub(r"\\\\P", " ", str(element.text or "")).strip()
+        label = re.sub(r"\\s+", " ", label)
+        if not label or re.fullmatch(
+            r"[0-9０-９.,，．+＋\\-−±×xX*/=()（）㎡mＭｍ²³\\s]+", label
+        ):
+            continue
+        try:
+            x, y = float(element.insertion_point[0]), float(element.insertion_point[1])
+        except (TypeError, ValueError, IndexError, OverflowError):
+            continue
+        if not (math.isfinite(x) and math.isfinite(y)):
+            continue
+        text_records.append((element, label, Point(x, y)))
+
+    room_polygons = []
+    for room in rooms:
+        try:
+            polygon = Polygon(room.boundary)
+            if polygon.is_valid and not polygon.is_empty and polygon.area > 0:
+                room_polygons.append((room, polygon))
+        except (TypeError, ValueError):
+            continue
+
+    labels_by_room = {room.room_id: [] for room, _ in room_polygons}
+    for element, label, point in text_records:
+        matching = []
+        for room, polygon in room_polygons:
+            try:
+                if polygon.contains(point):
+                    matching.append(room)
+            except (TypeError, ValueError):
+                continue
+        # Do not guess when candidates overlap or share an interior.
+        if len(matching) == 1:
+            labels_by_room[matching[0].room_id].append((element, label))
+
+    associated = []
+    for room in rooms:
+        matches = labels_by_room.get(room.room_id, [])
+        if len(matches) == 1:
+            element, label = matches[0]
+            properties = {
+                **room.properties,
+                "room_name_source_element_id": element.element_id,
+                "room_name_association": "single_text_inside_candidate",
+            }
+            associated.append(replace(room, room_name=label, properties=properties))
+        else:
+            associated.append(room)
+    return associated
