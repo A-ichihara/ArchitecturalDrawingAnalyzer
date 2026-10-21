@@ -73,6 +73,47 @@ def test_parse_real_dxf_entities(tmp_path):
     assert {e.element_type for e in texts} == {"TEXT", "MTEXT"}
 
 
+def test_parse_infers_supported_units_from_dxf_insunits(tmp_path):
+    doc = ezdxf.new("R2010")
+    doc.header["$INSUNITS"] = 6  # metres
+    doc.modelspace().add_lwpolyline(
+        [(0, 0), (5, 0), (5, 4), (0, 4)],
+        close=True,
+    )
+    path = tmp_path / "metres.dxf"
+    doc.saveas(path)
+
+    drawing = DxfParser().parse(str(path))
+
+    assert drawing.units == "m"
+    assert drawing._meta["dxf_insunits"] == 6
+    assert drawing._meta["units_source"] == "dxf_insunits"
+
+
+def test_parse_explicit_units_override_dxf_insunits(tmp_path):
+    doc = ezdxf.new("R2010")
+    doc.header["$INSUNITS"] = 6
+    path = tmp_path / "override.dxf"
+    doc.saveas(path)
+
+    drawing = DxfParser().parse(str(path), units="mm")
+
+    assert drawing.units == "mm"
+    assert drawing._meta["units_source"] == "explicit_argument"
+
+
+def test_parse_unitless_dxf_preserves_millimetre_fallback(tmp_path):
+    doc = ezdxf.new("R2010")
+    doc.header["$INSUNITS"] = 0
+    path = tmp_path / "unitless.dxf"
+    doc.saveas(path)
+
+    drawing = DxfParser().parse(str(path))
+
+    assert drawing.units == "mm"
+    assert drawing._meta["units_source"] == "default_mm"
+
+
 def test_get_layer_info_from_real_dxf(tmp_path):
     doc = ezdxf.new("R2010")
     doc.layers.new("WALL", dxfattribs={"color": 1})
