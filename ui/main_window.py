@@ -27,6 +27,7 @@ from core.analyzer.drawing_analyzer import DrawingAnalyzer
 from core.analyzer.room_detector import (
     detect_closed_polyline_room_candidates,
     detect_linework_room_candidates,
+    deduplicate_room_candidates,
 )
 
 from ui.panels.layer_panel import LayerPanel
@@ -462,7 +463,7 @@ class MainWindow(QMainWindow):
     @Slot(object, object)
     def _on_room_detection_finished(self, polyline_rooms: list, linework_rooms: list) -> None:
         self._label_status.setText("状態：部屋候補の解析完了")
-        rooms = polyline_rooms + linework_rooms
+        rooms = deduplicate_room_candidates(polyline_rooms, linework_rooms)
         self._log("info", f"部屋候補: ポリライン {len(polyline_rooms)} 件 / 線分 {len(linework_rooms)} 件")
         if not rooms:
             QMessageBox.information(self, "部屋候補の検出", "閉じた領域候補は見つかりませんでした。")
@@ -477,7 +478,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self, "部屋候補の検出",
             f"暫定的な閉領域候補: {len(rooms)} 件\n"
-            "※ 部屋名・壁芯は未判定です。重複候補が含まれる場合があります。\n\n"
+            "※ 部屋名・壁芯は未判定です。部分的に重なる候補は残る場合があります。\n\n"
             + preview,
         )
 
