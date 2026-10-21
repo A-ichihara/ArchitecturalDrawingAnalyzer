@@ -363,8 +363,8 @@ def associate_room_names(drawing: Drawing, rooms: List[Room]) -> List[Room]:
     for element in drawing.elements:
         if not isinstance(element, TextElement):
             continue
-        label = re.sub(r"\\\\P", " ", str(element.text or "")).strip()
-        label = re.sub(r"\\s+", " ", label)
+        label = re.sub(r"\\P", " ", str(element.text or "")).strip()
+        label = re.sub(r"\s+", " ", label)
         if not label or re.fullmatch(
             r"[0-9０-９.,，．+＋\\-−±×xX*/=()（）㎡mＭｍ²³\\s]+", label
         ):
