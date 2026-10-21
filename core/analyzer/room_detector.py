@@ -216,3 +216,37 @@ def detect_linework_room_candidates(
         )
 
     return candidates
+
+
+def deduplicate_room_candidates(polyline_rooms: List[Room], linework_rooms: List[Room]) -> List[Room]:
+    """Suppress coincident linework candidates when a closed polyline already exists.
+
+    Geometric equality is evaluated using symmetric-difference area, not vertex
+    order. Partial overlaps and adjacent rooms remain separate candidates.
+    """
+    accepted = list(polyline_rooms)
+    polygons = []
+    for room in polyline_rooms:
+        try:
+            polygon = Polygon(room.boundary)
+            if polygon.is_valid and not polygon.is_empty and polygon.area > 0:
+                polygons.append(polygon)
+        except (TypeError, ValueError):
+            continue
+
+    for room in linework_rooms:
+        try:
+            polygon = Polygon(room.boundary)
+            if polygon.is_valid and not polygon.is_empty and polygon.area > 0:
+                duplicate = any(
+                    polygon.symmetric_difference(existing).area
+                    <= max(polygon.area, existing.area) * 1e-9
+                    for existing in polygons
+                )
+                if duplicate:
+                    continue
+                polygons.append(polygon)
+        except (TypeError, ValueError):
+            pass
+        accepted.append(room)
+    return accepted
