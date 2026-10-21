@@ -90,6 +90,21 @@ def test_parse_infers_supported_units_from_dxf_insunits(tmp_path):
     assert drawing._meta["units_source"] == "dxf_insunits"
 
 
+def test_parse_maps_all_supported_dxf_insunits_values(tmp_path):
+    expected = {1: "in", 2: "ft", 4: "mm", 5: "cm", 6: "m"}
+    for insunits, expected_unit in expected.items():
+        doc = ezdxf.new("R2010")
+        doc.header["$INSUNITS"] = insunits
+        path = tmp_path / f"unit_{insunits}.dxf"
+        doc.saveas(path)
+
+        drawing = DxfParser().parse(str(path))
+
+        assert drawing.units == expected_unit
+        assert drawing._meta["dxf_insunits"] == insunits
+        assert drawing._meta["units_source"] == "dxf_insunits"
+
+
 def test_parse_explicit_units_override_dxf_insunits(tmp_path):
     doc = ezdxf.new("R2010")
     doc.header["$INSUNITS"] = 6
