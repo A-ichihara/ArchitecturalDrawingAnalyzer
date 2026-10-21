@@ -1,6 +1,7 @@
 import pytest
 
 from core.analyzer.room_detector import (
+    associate_room_names,
     detect_closed_polyline_room_candidates,
     detect_linework_room_candidates,
     deduplicate_room_candidates,
