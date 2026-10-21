@@ -565,3 +565,33 @@ def test_endpoint_snapping_does_not_chain_points_beyond_tolerance():
     ])
 
     assert detect_linework_room_candidates(drawing, gap_tolerance=1.0) == []
+
+
+def test_linework_detector_skips_close_concentric_wall_outlines():
+    """Double-line wall outlines must not invent a usable room area."""
+    drawing = _drawing([
+        _line("OUT_BOTTOM", [0, 0], [10000, 0]),
+        _line("OUT_RIGHT", [10000, 0], [10000, 8000]),
+        _line("OUT_TOP", [10000, 8000], [0, 8000]),
+        _line("OUT_LEFT", [0, 8000], [0, 0]),
+        _line("IN_BOTTOM", [150, 150], [9850, 150]),
+        _line("IN_RIGHT", [9850, 150], [9850, 7850]),
+        _line("IN_TOP", [9850, 7850], [150, 7850]),
+        _line("IN_LEFT", [150, 7850], [150, 150]),
+    ])
+    assert detect_linework_room_candidates(drawing) == []
+
+
+def test_linework_detector_preserves_adjacent_rooms_with_dangling_wall_lines():
+    """Unclosed nearby wall fragments must not erase two valid adjacent rooms."""
+    drawing = _drawing([
+        _line("BOTTOM", [0, 0], [10000, 0]),
+        _line("TOP", [10000, 4000], [0, 4000]),
+        _line("LEFT", [0, 4000], [0, 0]),
+        _line("RIGHT", [10000, 0], [10000, 4000]),
+        _line("PARTITION", [5000, 0], [5000, 4000]),
+        _line("DANGLING", [12000, 0], [14000, 0]),
+    ])
+    rooms = detect_linework_room_candidates(drawing)
+    assert len(rooms) == 2
+    assert sorted(room.area_m2 for room in rooms) == pytest.approx([20.0, 20.0])
