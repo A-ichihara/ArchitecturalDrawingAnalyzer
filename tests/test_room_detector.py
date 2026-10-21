@@ -782,7 +782,7 @@ def test_room_name_association_does_not_collapse_candidates_with_duplicate_ids()
             insertion_point=[2500, 2000],
         )
     ])
-    first = RoomLike = detect_closed_polyline_room_candidates(
+    first = detect_closed_polyline_room_candidates(
         _drawing([_polyline("A", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]])])
     )[0]
     second = replace(first, room_id=first.room_id)
