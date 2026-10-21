@@ -335,3 +335,28 @@ def test_dxf_parser_preserves_insert_block_transform_metadata(tmp_path):
     assert insert.scale_z == pytest.approx(1)
     assert insert.layer == "DOORS"
 
+def test_dxf_parser_keeps_supported_geometry_when_hatch_is_unsupported(tmp_path):
+    """Unsupported fill entities are reported without discarding supported lines."""
+    import ezdxf
+    from core.models.drawing import LineElement
+
+    doc = ezdxf.new("R2010")
+    msp = doc.modelspace()
+    msp.add_line((0, 0), (5000, 0), dxfattribs={"layer": "WALLS"})
+    hatch = msp.add_hatch(dxfattribs={"layer": "FILL"})
+    hatch.paths.add_polyline_path(
+        [(100, 100), (900, 100), (900, 900), (100, 900)],
+        is_closed=True,
+    )
+    path = tmp_path / "supported_and_unsupported_entities.dxf"
+    doc.saveas(path)
+
+    drawing = DxfParser().parse(str(path))
+
+    lines = [element for element in drawing.elements if isinstance(element, LineElement)]
+    assert len(lines) == 1
+    assert lines[0].start == pytest.approx([0, 0])
+    assert lines[0].end == pytest.approx([5000, 0])
+    assert drawing._meta["unsupported_types"].get("HATCH") == 1
+    assert drawing._meta["failed_types"] == {}
+
