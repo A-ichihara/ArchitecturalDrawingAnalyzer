@@ -118,6 +118,36 @@ def test_overlay_items_are_selectable_and_hideable():
     assert group.isVisible()
 
 
+def test_overlay_label_uses_selected_area_basis():
+    _ensure_qt_app()
+    _, rooms = _sample_rooms("sample_01_rect.dxf")
+    room = rooms[0]
+    room.properties["area_centerline_m2"] = 16.5
+
+    scene = DrawingScene()
+    renderer = RoomOverlayRenderer()
+    rendered = renderer.render_rooms([room], scene, area_basis="centerline")
+    label = rendered[room.room_id].childItems()[1]
+    assert "16.50 m²" in label.text()
+
+    renderer.clear(scene)
+    rendered = renderer.render_rooms([room], scene, area_basis="inner")
+    label = rendered[room.room_id].childItems()[1]
+    assert f"{room.area_m2:.2f} m²" in label.text()
+
+
+def test_overlay_centerline_basis_falls_back_without_centerline_area():
+    _ensure_qt_app()
+    _, rooms = _sample_rooms("sample_01_rect.dxf")
+    room = rooms[0]
+    assert "area_centerline_m2" not in room.properties
+
+    scene = DrawingScene()
+    rendered = RoomOverlayRenderer().render_rooms([room], scene, area_basis="centerline")
+    label = rendered[room.room_id].childItems()[1]
+    assert f"{room.area_m2:.2f} m²" in label.text()
+
+
 def test_main_window_detection_renders_overlay_and_enables_export():
     _ensure_qt_app()
     from ui.main_window import MainWindow

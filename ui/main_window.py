@@ -115,6 +115,7 @@ class MainWindow(QMainWindow):
         self._current_file: Optional[str] = None
         self._drawing: Optional[Drawing] = None
         self._rooms: list[Room] = []
+        self._area_basis: str = "inner"
         self._room_overlay = RoomOverlayRenderer()
         self._load_thread: Optional[QThread] = None
         self._worker: Optional[DxfLoadWorker] = None
@@ -242,6 +243,7 @@ class MainWindow(QMainWindow):
         self._room_panel.room_selected.connect(self._on_room_panel_selected)
         self._room_panel.room_name_changed.connect(self._on_room_name_changed)
         self._room_panel.room_status_changed.connect(self._on_room_status_changed)
+        self._room_panel.area_basis_changed.connect(self._on_area_basis_changed)
 
     def _setup_statusbar(self) -> None:
         statusbar = QStatusBar()
@@ -405,8 +407,10 @@ class MainWindow(QMainWindow):
         self._update_title()
         self._drawing = drawing
         self._rooms = []
+        self._area_basis = "inner"
         self._room_overlay.clear(self._scene)
         self._room_panel.clear()
+        self._room_panel.set_area_basis("inner")
         self._act_export_rooms.setEnabled(False)
         self._act_detect_rooms.setEnabled(True)
         self._label_coords.setText(
@@ -528,8 +532,10 @@ class MainWindow(QMainWindow):
             return
         # 図面上に部屋候補を重ねて表示し、部屋一覧パネルに反映する。
         self._room_overlay.clear(self._scene)
-        self._room_overlay.render_rooms(rooms, self._scene)
+        self._room_overlay.render_rooms(rooms, self._scene, self._area_basis)
         self._room_panel.set_rooms(rooms)
+        self._room_panel.set_area_basis(self._area_basis)
+        self._area_basis = self._room_panel.area_basis
         self._act_export_rooms.setEnabled(True)
         self._label_status.setText(f"状態：部屋候補 {len(rooms)} 件を検出")
         self._log("info", f"部屋候補 {len(rooms)} 件を図面に表示しました。部屋をクリックして名前や状態を確認できます。")
@@ -606,11 +612,18 @@ class MainWindow(QMainWindow):
         """確認状態の変更をオーバーレイへ反映する。"""
         self._rerender_room_overlay()
 
+    def _on_area_basis_changed(self, basis: str) -> None:
+        """面積基準の切り替えをオーバーレイと一覧へ反映する。"""
+        self._area_basis = basis
+        self._rerender_room_overlay()
+        label = "壁芯" if basis == "centerline" else "内法"
+        self._log("info", f"面積基準を「{label}」に切り替えました。")
+
     def _rerender_room_overlay(self) -> None:
         """現在の部屋一覧でオーバーレイを描き直す。"""
         self._room_overlay.clear(self._scene)
         if self._rooms:
-            self._room_overlay.render_rooms(self._rooms, self._scene)
+            self._room_overlay.render_rooms(self._rooms, self._scene, self._area_basis)
 
     def _export_rooms(self) -> None:
         """確認した部屋一覧を CSV / Excel で保存する。"""
@@ -631,6 +644,7 @@ class MainWindow(QMainWindow):
                 file_path,
                 drawing_name=os.path.basename(self._current_file or ""),
                 units=self._drawing.units,
+                area_basis=self._area_basis,
             )
         except Exception as exc:
             logger.exception("部屋一覧の出力に失敗しました")
