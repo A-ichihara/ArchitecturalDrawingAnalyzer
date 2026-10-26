@@ -57,10 +57,28 @@ _STATUS_STYLES = {
 }
 
 
-def room_label_text(room: Room) -> str:
+def display_area(room: Room, area_basis: str) -> tuple[float, str]:
+    """表示・出力に使う面積とその基準を返す。
+
+    壁芯が選ばれ、かつその部屋に壁芯面積がある場合だけ壁芯面積を
+    使い、それ以外は内法面積（room.area_m2）を使う。
+    """
+    if area_basis == "centerline":
+        centerline = room.properties.get("area_centerline_m2")
+        try:
+            value = float(centerline)
+        except (TypeError, ValueError, OverflowError):
+            value = None
+        if value is not None:
+            return value, "centerline"
+    return float(room.area_m2), "inner"
+
+
+def room_label_text(room: Room, area_basis: str = "inner") -> str:
     """オーバーレイに表示する部屋ラベル（名前 + 面積）。"""
     name = room.room_name or "（未判定）"
-    return f"{name}\n{room.area_m2:.2f} m²"
+    area, _basis = display_area(room, area_basis)
+    return f"{name}\n{area:.2f} m²"
 
 
 class RoomOverlayRenderer:
@@ -73,16 +91,21 @@ class RoomOverlayRenderer:
         self._items: Dict[str, QGraphicsItemGroup] = {}
 
     def render_rooms(
-        self, rooms: List[Room], scene: DrawingScene
+        self,
+        rooms: List[Room],
+        scene: DrawingScene,
+        area_basis: str = "inner",
     ) -> Dict[str, QGraphicsItemGroup]:
         """部屋一覧を描画し、部屋 ID → グループの対応を返す。
 
+        area_basis が "centerline" の場合、壁芯面積がある部屋は
+        壁芯面積でラベルを表示する（ない部屋は内法のまま）。
         既存のオーバーレイは消さずに追加する。描き直す場合は
         呼び出し側で先に clear() すること。
         """
         rendered: Dict[str, QGraphicsItemGroup] = {}
         for room in rooms:
-            group = self._create_room_group(room)
+            group = self._create_room_group(room, area_basis)
             if group is None:
                 continue
             group.setZValue(float(DrawingLayer.ANALYSIS))
@@ -107,7 +130,7 @@ class RoomOverlayRenderer:
     # プライベートメソッド
     # ------------------------------------------------------------------
 
-    def _create_room_group(self, room: Room) -> Optional[QGraphicsItemGroup]:
+    def _create_room_group(self, room: Room, area_basis: str = "inner") -> Optional[QGraphicsItemGroup]:
         boundary = room.boundary or []
         if len(boundary) < 3:
             logger.warning("部屋境界が不十分なため描画を省略: %s", room.room_id)
@@ -139,7 +162,7 @@ class RoomOverlayRenderer:
 
         # 部屋名・面積ラベル。重心に配置し、ズームしても文字が
         # 一定の大きさで読めるよう変換を無視する。
-        label = QGraphicsSimpleTextItem(room_label_text(room))
+        label = QGraphicsSimpleTextItem(room_label_text(room, area_basis))
         font = QFont("Yu Gothic UI", 11)
         label.setFont(font)
         label.setBrush(style["pen"])

@@ -31,14 +31,29 @@ def _meta_rows(
     ]
 
 
-def _room_values(room: Room) -> List[object]:
-    """1 部屋分の出力値。面積・確信度は数値のまま返す。"""
+def _room_values(room: Room, area_basis: str = "inner") -> List[object]:
+    """1 部屋分の出力値。面積・確信度は数値のまま返す。
+
+    area_basis が "centerline" の場合、壁芯面積がある部屋は
+    壁芯面積と基準「壁芯」で出力する（ない部屋は内法のまま）。
+    """
+    area_m2 = float(room.area_m2)
+    wall_type = room.wall_type
+    if area_basis == "centerline":
+        centerline = room.properties.get("area_centerline_m2")
+        try:
+            centerline_value = float(centerline)
+        except (TypeError, ValueError, OverflowError):
+            centerline_value = None
+        if centerline_value is not None:
+            area_m2 = centerline_value
+            wall_type = "centerline"
     return [
         room.room_id,
         room.room_name,
-        round(float(room.area_m2), 2),
+        round(area_m2, 2),
         REVIEW_STATUS_LABELS.get(room.review_status, "要確認"),
-        WALL_TYPE_LABELS.get(room.wall_type, "不明"),
+        WALL_TYPE_LABELS.get(wall_type, "不明"),
         room.properties.get("candidate_type", ""),
         round(float(room.confidence), 2),
     ]
@@ -55,6 +70,7 @@ def export_rooms_csv(
     drawing_name: str = "",
     units: str = "mm",
     exported_at: Optional[datetime] = None,
+    area_basis: str = "inner",
 ) -> Path:
     """部屋一覧を CSV (UTF-8 BOM 付き) で書き出す。"""
     path = Path(path)
@@ -66,7 +82,7 @@ def export_rooms_csv(
         writer.writerow([])
         writer.writerow(COLUMNS)
         for room in rows:
-            values = _room_values(room)
+            values = _room_values(room, area_basis)
             values[2] = f"{values[2]:.2f}"
             values[6] = f"{values[6]:.2f}"
             writer.writerow(values)
@@ -80,6 +96,7 @@ def export_rooms_xlsx(
     drawing_name: str = "",
     units: str = "mm",
     exported_at: Optional[datetime] = None,
+    area_basis: str = "inner",
 ) -> Path:
     """部屋一覧を Excel (.xlsx) で書き出す。"""
     from openpyxl import Workbook
@@ -99,7 +116,7 @@ def export_rooms_xlsx(
     for cell in ws[ws.max_row]:
         cell.font = Font(bold=True)
     for room in rows:
-        ws.append(_room_values(room))
+        ws.append(_room_values(room, area_basis))
     # 面積と確信度は数値セルとして小数 2 桁表示にする。
     for row in ws.iter_rows(min_row=ws.max_row - len(rows) + 1, max_row=ws.max_row):
         row[2].number_format = "0.00"
@@ -118,6 +135,7 @@ def export_rooms(
     drawing_name: str = "",
     units: str = "mm",
     exported_at: Optional[datetime] = None,
+    area_basis: str = "inner",
 ) -> Path:
     """拡張子 (.csv / .xlsx) で出力形式を選んで書き出す。"""
     path = Path(path)
@@ -126,6 +144,7 @@ def export_rooms(
         "drawing_name": drawing_name,
         "units": units,
         "exported_at": exported_at,
+        "area_basis": area_basis,
     }
     if suffix == ".csv":
         return export_rooms_csv(rooms, path, **kwargs)
