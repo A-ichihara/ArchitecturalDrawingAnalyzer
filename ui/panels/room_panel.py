@@ -29,6 +29,7 @@ class RoomPanel(QWidget):
     room_name_changed = Signal(str, str)     # 部屋 ID, 新しい部屋名
     room_status_changed = Signal(str, str)   # 部屋 ID, 新しい確認状態
     area_basis_changed = Signal(str)         # 面積基準 ("inner" / "centerline")
+    room_deleted = Signal(str)               # 部屋 ID
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -82,9 +83,12 @@ class RoomPanel(QWidget):
         self._btn_reject.clicked.connect(self._on_reject_clicked)
         self._btn_to_confirm = QPushButton("要確認に戻す")
         self._btn_to_confirm.clicked.connect(self._on_to_confirm_clicked)
+        self._btn_delete = QPushButton("削除")
+        self._btn_delete.clicked.connect(self._on_delete_clicked)
         buttons.addWidget(self._btn_confirm)
         buttons.addWidget(self._btn_reject)
         buttons.addWidget(self._btn_to_confirm)
+        buttons.addWidget(self._btn_delete)
         editor_layout.addLayout(buttons)
 
         layout.addWidget(editor)
@@ -156,6 +160,25 @@ class RoomPanel(QWidget):
             if room is not None:
                 item.setText(self._room_item_text(row + 1, room))
 
+    def delete_room(self, room_id: str) -> bool:
+        """指定した部屋を一覧から削除する。削除した場合は True を返す。"""
+        room = self._rooms.pop(room_id, None)
+        if room is None:
+            return False
+        for row in range(self._room_list.count()):
+            item = self._room_list.item(row)
+            if item.data(Qt.ItemDataRole.UserRole) == room_id:
+                self._room_list.takeItem(row)
+                break
+        if self._current_room_id == room_id:
+            self._current_room_id = None
+            self._name_edit.clear()
+            self._info_label.setText(f"部屋候補：{len(self._rooms)} 件")
+            self._set_editor_enabled(False)
+        self._refresh_list()
+        self._update_basis_availability()
+        return True
+
     def select_room(self, room_id: str) -> None:
         """指定した部屋を一覧で選択し、編集欄に表示する。"""
         for row in range(self._room_list.count()):
@@ -208,6 +231,7 @@ class RoomPanel(QWidget):
         self._btn_confirm.setEnabled(enabled)
         self._btn_reject.setEnabled(enabled)
         self._btn_to_confirm.setEnabled(enabled)
+        self._btn_delete.setEnabled(enabled)
 
     def _refresh_list_item(self, room_id: str) -> None:
         """一覧の表示を最新の部屋情報で更新する。"""
@@ -272,3 +296,10 @@ class RoomPanel(QWidget):
 
     def _on_to_confirm_clicked(self) -> None:
         self._change_status(REVIEW_STATUS_TO_CONFIRM)
+
+    def _on_delete_clicked(self) -> None:
+        if self._current_room_id is None:
+            return
+        room_id = self._current_room_id
+        if self.delete_room(room_id):
+            self.room_deleted.emit(room_id)
