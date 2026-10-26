@@ -274,20 +274,24 @@ class Drawing:
         return next((element for element in self.elements if element.element_id == element_id), None)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        data = {
             "drawing_id": self.drawing_id,
             "file_name": self.file_name,
             "file_type": self.file_type,
             "scale": self.scale,
             "units": self.units,
             "elements": [e.to_dict() for e in self.elements],
+            # 解析メタデータ（単位の根拠・未対応要素など）。動的属性 _meta
+            # として付与されるが、保存・復元時に失われないよう含める。
+            "meta": dict(getattr(self, "_meta", {}) or {}),
         }
+        return data
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Drawing':
         elements_data = data.get("elements", [])
         elements = [DrawingElement.from_dict(e) for e in elements_data]
-        return cls(
+        drawing = cls(
             drawing_id=data["drawing_id"],
             file_name=data["file_name"],
             file_type=data["file_type"],
@@ -295,3 +299,5 @@ class Drawing:
             units=data.get("units", "mm"),
             elements=elements,
         )
+        drawing._meta = dict(data.get("meta", {}) or {})  # type: ignore[attr-defined]
+        return drawing

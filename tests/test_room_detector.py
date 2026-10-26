@@ -9,6 +9,7 @@ from core.analyzer.room_detector import (
     deduplicate_room_candidates,
 )
 from core.models.drawing import Drawing, LineElement, PolylineElement, TextElement
+from core.models.room import Room
 
 
 def _polyline(element_id, points, *, closed=True, bulges=None, layer="ROOM_BOUNDARY"):
@@ -508,7 +509,7 @@ def test_room_name_association_ignores_numeric_dimension_text():
     assert associated[0].room_name == ""
 
 
-def test_room_name_association_does_not_guess_for_overlapping_candidates():
+def test_room_name_association_does_not_guess_for_partially_overlapping_candidates():
     drawing = _drawing([
         _polyline("ROOM_A", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]]),
         _polyline("ROOM_B", [[1000, 1000], [6000, 1000], [6000, 5000], [1000, 5000]]),
@@ -768,6 +769,44 @@ def test_deduplication_removes_duplicate_linework_candidates_too():
     combined = deduplicate_room_candidates([], [rooms[0], duplicate])
     assert len(combined) == 1
     assert combined[0] is rooms[0]
+
+
+def test_deduplication_removes_identical_polyline_candidates_on_different_layers():
+    """The same boundary drawn on two layers is one room, not two."""
+    drawing = _drawing([
+        _polyline("P_A", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]], layer="ROOM_A"),
+        _polyline("P_B", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]], layer="ROOM_B"),
+    ])
+    rooms = detect_closed_polyline_room_candidates(drawing)
+    assert len(rooms) == 2
+    combined = deduplicate_room_candidates(rooms, [])
+    assert len(combined) == 1
+    assert combined[0] is rooms[0]
+    assert combined[0].area_m2 == pytest.approx(20.0)
+
+
+def test_deduplication_drops_candidates_with_invalid_boundaries():
+    """A candidate whose boundary cannot form a polygon must not pass through."""
+    valid = Room(
+        room_id="VALID",
+        room_name="",
+        area_m2=20.0,
+        boundary=[[0, 0], [5000, 0], [5000, 4000], [0, 4000]],
+    )
+    invalid = Room(
+        room_id="INVALID",
+        room_name="",
+        area_m2=20.0,
+        boundary=[["not-a-number", 0], [5000, 0], [5000, 4000]],
+    )
+    degenerate = Room(
+        room_id="DEGENERATE",
+        room_name="",
+        area_m2=20.0,
+        boundary=[[0, 0], [5000, 0]],
+    )
+    combined = deduplicate_room_candidates([valid, invalid, degenerate], [])
+    assert [room.room_id for room in combined] == ["VALID"]
 
 
 

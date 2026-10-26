@@ -1,6 +1,17 @@
 import os
 import ezdxf
 
+def _new_mm_document():
+    """mm単位の図面ドキュメントを作る。
+
+    ezdxf.new() の既定テンプレートは $INSUNITS=6（メートル）のため、
+    mm桁の座標と組み合わせると面積が100万倍に誤算出される。
+    サンプル図面はすべて mm 座標で描くので、単位を明示する。
+    """
+    doc = ezdxf.new("R2010")
+    doc.header["$INSUNITS"] = 4  # mm
+    return doc
+
 def ensure_data_dir() -> str:
     data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
     os.makedirs(data_dir, exist_ok=True)
@@ -8,7 +19,7 @@ def ensure_data_dir() -> str:
 
 def create_sample_01_rect(data_dir: str):
     """Test 01: 矩形 (LWPOLYLINE)"""
-    doc = ezdxf.new("R2010")
+    doc = _new_mm_document()
     msp = doc.modelspace()
     doc.layers.add("WALL", color=1)  # 赤
     
@@ -23,7 +34,7 @@ def create_sample_01_rect(data_dir: str):
 
 def create_sample_02_multi_rect(data_dir: str):
     """Test 02: 複数の矩形"""
-    doc = ezdxf.new("R2010")
+    doc = _new_mm_document()
     msp = doc.modelspace()
     doc.layers.add("ROOM_A", color=2)  # 黄
     doc.layers.add("ROOM_B", color=3)  # 緑
@@ -42,7 +53,7 @@ def create_sample_02_multi_rect(data_dir: str):
 
 def create_sample_03_lines_arcs(data_dir: str):
     """Test 03: LINE + LWPOLYLINE + ARC + CIRCLE"""
-    doc = ezdxf.new("R2010")
+    doc = _new_mm_document()
     msp = doc.modelspace()
     doc.layers.add("STRUCTURE", color=4)  # シアン
     doc.layers.add("FURNITURE", color=5)  # 青
@@ -66,7 +77,7 @@ def create_sample_03_lines_arcs(data_dir: str):
 
 def create_sample_04_text(data_dir: str):
     """Test 04: 文字 (TEXT / MTEXT)"""
-    doc = ezdxf.new("R2010")
+    doc = _new_mm_document()
     msp = doc.modelspace()
     doc.layers.add("TEXT_LAYER", color=7)  # 白
     

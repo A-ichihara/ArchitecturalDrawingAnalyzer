@@ -412,6 +412,9 @@ class MainWindow(QMainWindow):
         self._log("info", f"要素内訳: {stats.by_type}")
         if unsupported:
             self._log("warn", f"未対応エンティティ（スキップ）: {unsupported}")
+        units_warning = meta.get("units_warning")
+        if units_warning:
+            self._log("warn", units_warning)
 
     def _on_load_error(self, file_path: str, message: str) -> None:
         """DXF読み込みエラー時の処理。"""

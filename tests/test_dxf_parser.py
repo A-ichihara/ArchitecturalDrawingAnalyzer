@@ -4,11 +4,14 @@ DxfParser の実装テスト。テスト用DXFファイルを使って動作確�
 """
 
 import os
+import ezdxf
 import pytest
+from core.analyzer.room_detector import detect_closed_polyline_room_candidates
 from core.parser.dxf_parser import DxfParser
 from core.models.drawing import Drawing, LineElement, PolylineElement, TextElement
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+SAMPLES_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "samples")
 
 
 def _data_path(filename: str) -> str:
@@ -36,6 +39,82 @@ def test_dxf_parser_sample_01_rect():
     assert isinstance(poly, PolylineElement)
     assert poly.is_closed is True
     assert len(poly.points) == 4
+
+
+def test_sample_01_rect_area_is_15_m2():
+    """sample_01（5000x3000）は 15 m² になること。単位宣言の誤りで100万倍にならない。"""
+    filepath = _data_path("sample_01_rect.dxf")
+    if not os.path.exists(filepath):
+        pytest.skip(f"テストファイルが存在しません: {filepath}")
+    drawing = DxfParser().parse(filepath)
+    assert drawing.units == "mm"
+    assert drawing._meta.get("units_warning") is None  # type: ignore[attr-defined]
+    rooms = detect_closed_polyline_room_candidates(drawing)
+    assert len(rooms) == 1
+    assert rooms[0].area_m2 == pytest.approx(15.0)
+
+
+def test_sample_02_multi_rect_areas_are_12_m2_each():
+    """sample_02（隣接2矩形）は各 12 m² になること。"""
+    filepath = _data_path("sample_02_multi_rect.dxf")
+    if not os.path.exists(filepath):
+        pytest.skip(f"テストファイルが存在しません: {filepath}")
+    drawing = DxfParser().parse(filepath)
+    assert drawing.units == "mm"
+    rooms = detect_closed_polyline_room_candidates(drawing)
+    assert len(rooms) == 2
+    assert sorted(room.area_m2 for room in rooms) == pytest.approx([12.0, 12.0])
+
+
+def test_sample_p2_complex_areas_are_realistic():
+    """sample_p2_complex の部屋候補面積はすべて現実的な範囲に収まること。"""
+    filepath = os.path.join(SAMPLES_DIR, "sample_p2_complex.dxf")
+    if not os.path.exists(filepath):
+        pytest.skip(f"テストファイルが存在しません: {filepath}")
+    drawing = DxfParser().parse(filepath)
+    assert drawing.units == "mm"
+    assert drawing._meta.get("units_warning") is None  # type: ignore[attr-defined]
+    rooms = detect_closed_polyline_room_candidates(drawing)
+    assert rooms, "部屋候補が1件も検出されない"
+    assert max(room.area_m2 for room in rooms) < 10_000.0
+
+
+def _write_rect_dxf(path, insunits, width, height):
+    doc = ezdxf.new("R2010")
+    doc.header["$INSUNITS"] = insunits
+    msp = doc.modelspace()
+    poly = msp.add_lwpolyline([(0, 0), (width, 0), (width, height), (0, height)])
+    poly.close(True)
+    doc.saveas(path)
+
+
+def test_parser_warns_when_metre_declaration_conflicts_with_mm_scale_coordinates(tmp_path):
+    """mm桁の座標にメートル宣言が付いた図面では、単位の警告が出ること。"""
+    filepath = tmp_path / "mm_coords_metre_unit.dxf"
+    _write_rect_dxf(filepath, insunits=6, width=5000, height=3000)
+    drawing = DxfParser().parse(str(filepath))
+    assert drawing.units == "m"
+    warning = drawing._meta.get("units_warning")  # type: ignore[attr-defined]
+    assert warning is not None
+    assert "単位設定を確認してください" in warning
+
+
+def test_parser_does_not_warn_for_metre_scale_coordinates(tmp_path):
+    """メートル桁の座標にメートル宣言が付いた図面では、警告が出ないこと。"""
+    filepath = tmp_path / "metre_coords.dxf"
+    _write_rect_dxf(filepath, insunits=6, width=5, height=3)
+    drawing = DxfParser().parse(str(filepath))
+    assert drawing.units == "m"
+    assert drawing._meta.get("units_warning") is None  # type: ignore[attr-defined]
+
+
+def test_parser_does_not_warn_for_mm_declared_coordinates(tmp_path):
+    """mm宣言の図面では、座標が大きくても警告が出ないこと。"""
+    filepath = tmp_path / "mm_coords.dxf"
+    _write_rect_dxf(filepath, insunits=4, width=5000, height=3000)
+    drawing = DxfParser().parse(str(filepath))
+    assert drawing.units == "mm"
+    assert drawing._meta.get("units_warning") is None  # type: ignore[attr-defined]
 
 
 def test_dxf_parser_sample_02_multi_rect():

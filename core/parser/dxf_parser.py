@@ -16,6 +16,80 @@ from core.models.drawing import (
 
 logger = logging.getLogger(__name__)
 
+# 単位あたりのメートル換算（長さ）。図面の外形寸法が建築図面として
+# 不自然に大きくなる場合に、単位宣言の誤りを疑うための目安に使う。
+_LINEAR_METRES_PER_UNIT = {
+    "mm": 0.001,
+    "millimeter": 0.001,
+    "millimeters": 0.001,
+    "cm": 0.01,
+    "centimeter": 0.01,
+    "centimeters": 0.01,
+    "m": 1.0,
+    "meter": 1.0,
+    "meters": 1.0,
+    "in": 0.0254,
+    "inch": 0.0254,
+    "inches": 0.0254,
+    "ft": 0.3048,
+    "foot": 0.3048,
+    "feet": 0.3048,
+}
+
+# 建築図面として不自然に大きいとみなす外形寸法（メートル）。
+# これを超える図面は、単位宣言が座標の桁数と食い違っている可能性が高い。
+# 例：mm単位の座標に $INSUNITS=メートルが付いた図面は 1000 m を軽く超える。
+_MAX_PLAUSIBLE_DRAWING_SIZE_M = 1000.0
+
+
+def _check_unit_plausibility(
+    elements: List[DrawingElement], units: str, units_source: str
+) -> str | None:
+    """宣言単位と座標の桁数の食い違いを検出し、警告文を返す。
+
+    単位が未設定で mm にフォールバックした場合（units_source == "default_mm"）
+    は、宣言自体がないため警告しない。座標が得られない場合も警告しない。
+    警告はあくまで疑いであり、読み込みや面積計算の動作は変えない。
+    """
+    if units_source == "default_mm":
+        return None
+    factor = _LINEAR_METRES_PER_UNIT.get((units or "").strip().lower())
+    if factor is None:
+        return None
+
+    points: List[tuple] = []
+    for elem in elements:
+        try:
+            if isinstance(elem, LineElement):
+                points.extend([tuple(elem.start[:2]), tuple(elem.end[:2])])
+            elif isinstance(elem, PolylineElement):
+                points.extend([tuple(pt[:2]) for pt in elem.points])
+            elif isinstance(elem, TextElement):
+                points.append(tuple(elem.insertion_point[:2]))
+            elif isinstance(elem, (CircleElement, ArcElement)):
+                cx, cy = float(elem.center[0]), float(elem.center[1])
+                r = float(elem.radius)
+                points.extend([(cx - r, cy - r), (cx + r, cy + r)])
+            elif isinstance(elem, InsertElement):
+                points.append(tuple(elem.insert_point[:2]))
+        except (TypeError, ValueError, IndexError, OverflowError):
+            continue
+    if not points:
+        return None
+    try:
+        xs = [float(p[0]) for p in points]
+        ys = [float(p[1]) for p in points]
+    except (TypeError, ValueError, OverflowError):
+        return None
+    max_size_m = max(max(xs) - min(xs), max(ys) - min(ys)) * factor
+    if max_size_m <= _MAX_PLAUSIBLE_DRAWING_SIZE_M:
+        return None
+    return (
+        f"図面の外形が約 {max_size_m:,.0f} m あり、建築図面として不自然に大きいため、"
+        f"単位設定を確認してください（宣言単位: {units}）。座標が mm 単位で記録され、"
+        f"単位宣言がメートル等になっている場合、面積が大幅に誤ります。"
+    )
+
 
 class DxfParser(IDrawingParser):
     """
@@ -118,6 +192,10 @@ class DxfParser(IDrawingParser):
         if failed_types:
             logger.warning("変換失敗エンティティ: %s", failed_types)
 
+        units_warning = _check_unit_plausibility(elements, units, units_source)
+        if units_warning:
+            logger.warning("%s", units_warning)
+
         drawing = Drawing(
             drawing_id=drawing_id,
             file_name=os.path.basename(file_path),
@@ -131,6 +209,7 @@ class DxfParser(IDrawingParser):
             "dxf_version": dxf_version,
             "dxf_insunits": dxf_insunits,
             "units_source": units_source,
+            "units_warning": units_warning,
             "unsupported_types": unsupported_types,
             "failed_types": failed_types,
             "layers": {layer.dxf.name: {"color": abs(layer.dxf.color), "is_on": layer.is_on()} for layer in doc.layers},

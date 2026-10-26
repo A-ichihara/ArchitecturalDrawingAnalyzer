@@ -68,6 +68,31 @@ def test_room_model():
     assert loaded.occupants == 10
     assert loaded.required_ventilation == 200.0
 
+def test_room_model_defaults_do_not_claim_unverified_results():
+    """既定値は未判定を表すこと。根拠なく壁芯・確信度1.0に見えてはならない。"""
+    room = Room(room_id="R000", room_name="", area_m2=0.0)
+    assert room.wall_type == "unknown"
+    assert room.confidence == 0.0
+
+
+def test_drawing_serialization_preserves_parser_metadata():
+    """Drawing._meta（単位の根拠・未対応要素など）は保存・復元で失われないこと。"""
+    drawing = Drawing(
+        drawing_id="A-102",
+        file_name="A-102.dxf",
+        file_type="dxf",
+        units="mm",
+        elements=[],
+    )
+    drawing._meta = {  # type: ignore[attr-defined]
+        "units_source": "dxf_insunits",
+        "unsupported_types": {"HATCH": 2},
+    }
+    loaded = Drawing.from_dict(drawing.to_dict())
+    assert loaded._meta["units_source"] == "dxf_insunits"  # type: ignore[attr-defined]
+    assert loaded._meta["unsupported_types"] == {"HATCH": 2}  # type: ignore[attr-defined]
+
+
 def test_change_model():
     change = Change(
         change_id="C001",

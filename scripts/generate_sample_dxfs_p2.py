@@ -10,6 +10,9 @@ import ezdxf
 
 def generate_complex_sample_dxf(output_path: str) -> None:
     doc = ezdxf.new("R2010")
+    # mm単位の図面。ezdxfの既定テンプレートは $INSUNITS=6（メートル）のため明示する。
+    # これがないと mm 桁の座標がメートルと解釈され、面積が100万倍に誤算出される。
+    doc.header["$INSUNITS"] = 4  # mm
     msp = doc.modelspace()
 
     # 1. レイヤー定義（11層）
