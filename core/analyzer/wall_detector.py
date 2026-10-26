@@ -140,6 +140,36 @@ def _centerline_over_overlap(a: _Segment, b: _Segment, lo: float, hi: float) -> 
     return points
 
 
+def _candidate_pairs(segments: List[_Segment], max_distance: float) -> List[Tuple[int, int]]:
+    """最大距離以内にあり得る線分の組を空間グリッドで絞り込む。
+
+    各線分を、最大距離だけ広げた外接矩形が触れるセルへ登録し、
+    同じセルに入った組だけを返す。線分同士の距離が最大距離を
+    超える組は決して同じセルに入らない。
+    """
+    if not segments or max_distance <= 0:
+        return []
+    cell = max_distance
+    grid: dict[Tuple[int, int], List[int]] = {}
+    for index, seg in enumerate(segments):
+        min_x = min(seg.p1[0], seg.p2[0]) - max_distance
+        max_x = max(seg.p1[0], seg.p2[0]) + max_distance
+        min_y = min(seg.p1[1], seg.p2[1]) - max_distance
+        max_y = max(seg.p1[1], seg.p2[1]) + max_distance
+        for cx in range(math.floor(min_x / cell), math.floor(max_x / cell) + 1):
+            for cy in range(math.floor(min_y / cell), math.floor(max_y / cell) + 1):
+                grid.setdefault((cx, cy), []).append(index)
+    seen: set[Tuple[int, int]] = set()
+    for indices in grid.values():
+        for a_pos in range(len(indices)):
+            for b_pos in range(a_pos + 1, len(indices)):
+                i, j = indices[a_pos], indices[b_pos]
+                if i > j:
+                    i, j = j, i
+                seen.add((i, j))
+    return sorted(seen)
+
+
 def detect_wall_pairs(
     drawing: Drawing,
     min_thickness_mm: float = MIN_WALL_THICKNESS_MM,
@@ -156,38 +186,40 @@ def detect_wall_pairs(
     max_thickness = max_thickness_mm / mm_per_unit
 
     segments = collect_wall_segments(drawing)
+    # 空間グリッドによる事前絞り込み。最大壁厚より離れた線分同士は
+    # 壁にならないため、同じセル（または隣接セル）にある線分だけを
+    # 比較する。グリッドなしの総当たりでは実図面で数秒かかる。
+    candidates = _candidate_pairs(segments, max_thickness)
     # 各線分について最も近い平行線との候補を集める。
     best: dict[int, Tuple[float, int, WallPair]] = {}
-    for i, a in enumerate(segments):
+    for i, j in candidates:
+        a, b = segments[i], segments[j]
         line_a = LineString([a.p1, a.p2])
-        for j, b in enumerate(segments):
-            if j <= i:
-                continue
-            angle_diff = abs(a.angle_deg - b.angle_deg) % 180.0
-            if angle_diff > 90.0:
-                angle_diff = 180.0 - angle_diff
-            if angle_diff > ANGLE_TOLERANCE_DEG:
-                continue
-            line_b = LineString([b.p1, b.p2])
-            distance = float(line_a.distance(line_b))
-            if distance < min_thickness or distance > max_thickness:
-                continue
-            overlap, lo, hi = _overlap_interval(a, b)
-            shorter = min(a.length, b.length)
-            if shorter == 0 or overlap / shorter < MIN_OVERLAP_RATIO:
-                continue
-            pair = WallPair(
-                line_a=[[a.p1[0], a.p1[1]], [a.p2[0], a.p2[1]]],
-                line_b=[[b.p1[0], b.p1[1]], [b.p2[0], b.p2[1]]],
-                thickness=distance,
-                centerline=_centerline_over_overlap(a, b, lo, hi),
-                overlap_ratio=overlap / shorter,
-                source_ids=(a.source_id, b.source_id),
-            )
-            for index in (i, j):
-                current = best.get(index)
-                if current is None or distance < current[0]:
-                    best[index] = (distance, j if index == i else i, pair)
+        angle_diff = abs(a.angle_deg - b.angle_deg) % 180.0
+        if angle_diff > 90.0:
+            angle_diff = 180.0 - angle_diff
+        if angle_diff > ANGLE_TOLERANCE_DEG:
+            continue
+        line_b = LineString([b.p1, b.p2])
+        distance = float(line_a.distance(line_b))
+        if distance < min_thickness or distance > max_thickness:
+            continue
+        overlap, lo, hi = _overlap_interval(a, b)
+        shorter = min(a.length, b.length)
+        if shorter == 0 or overlap / shorter < MIN_OVERLAP_RATIO:
+            continue
+        pair = WallPair(
+            line_a=[[a.p1[0], a.p1[1]], [a.p2[0], a.p2[1]]],
+            line_b=[[b.p1[0], b.p1[1]], [b.p2[0], b.p2[1]]],
+            thickness=distance,
+            centerline=_centerline_over_overlap(a, b, lo, hi),
+            overlap_ratio=overlap / shorter,
+            source_ids=(a.source_id, b.source_id),
+        )
+        for index in (i, j):
+            current = best.get(index)
+            if current is None or distance < current[0]:
+                best[index] = (distance, j if index == i else i, pair)
 
     # 同じ組の重複を除く（2本の線の座標で識別する。source_id は
     # ポリラインの辺で共有されるため識別子には使えない）。

@@ -152,9 +152,12 @@ def test_outer_face_loop_gets_no_centerline_area():
 def test_wall_detection_on_real_sample_does_not_crash():
     from core.parser.dxf_parser import DxfParser
 
-    data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
-    drawing = DxfParser().parse(os.path.join(data_dir, "sample_p2_complex.dxf"))
+    # sample_p2_complex.dxf は samples/ にある（data/ には無い）。
+    samples_dir = os.path.join(os.path.dirname(__file__), "..", "samples")
+    drawing = DxfParser().parse(os.path.join(samples_dir, "sample_p2_complex.dxf"))
+    assert len(drawing.elements) > 100
     first = detect_wall_pairs(drawing)
     second = detect_wall_pairs(drawing)
     assert len(first) == len(second)
-    assert all(pair.thickness >= 50.0 for pair in first)
+    assert len(first) > 0
+    assert all(50.0 <= pair.thickness <= 500.0 for pair in first)
