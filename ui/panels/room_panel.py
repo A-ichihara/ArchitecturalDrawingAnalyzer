@@ -8,10 +8,11 @@ from typing import Dict, List, Optional
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget,
-    QListWidgetItem, QLineEdit, QPushButton, QGroupBox,
+    QListWidgetItem, QLineEdit, QPushButton, QGroupBox, QComboBox,
 )
 from PySide6.QtCore import Qt, Signal
 
+from core.drawing_viewer.room_overlay import display_area
 from core.models.room import (
     REVIEW_STATUS_CONFIRMED,
     REVIEW_STATUS_LABELS,
@@ -27,11 +28,13 @@ class RoomPanel(QWidget):
     room_selected = Signal(str)              # 部屋 ID
     room_name_changed = Signal(str, str)     # 部屋 ID, 新しい部屋名
     room_status_changed = Signal(str, str)   # 部屋 ID, 新しい確認状態
+    area_basis_changed = Signal(str)         # 面積基準 ("inner" / "centerline")
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._rooms: Dict[str, Room] = {}
         self._current_room_id: Optional[str] = None
+        self._area_basis = "inner"
         self._init_ui()
 
     def _init_ui(self) -> None:
@@ -41,6 +44,17 @@ class RoomPanel(QWidget):
         title = QLabel("部屋候補")
         title.setStyleSheet("font-weight: bold; font-size: 13px; color: #7aa2f7;")
         layout.addWidget(title)
+
+        # 面積基準の選択（壁芯は、壁芯面積がある部屋がある場合のみ選べる）。
+        basis_row = QHBoxLayout()
+        basis_row.addWidget(QLabel("面積基準"))
+        self._basis_combo = QComboBox()
+        self._basis_combo.addItem("内法", "inner")
+        self._basis_combo.addItem("壁芯", "centerline")
+        self._basis_combo.currentIndexChanged.connect(self._on_basis_changed)
+        basis_row.addWidget(self._basis_combo)
+        basis_row.addStretch()
+        layout.addLayout(basis_row)
 
         self._room_list = QListWidget()
         self._room_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
@@ -92,6 +106,55 @@ class RoomPanel(QWidget):
             self._room_list.addItem(item)
         self._set_editor_enabled(False)
         self._info_label.setText(f"部屋候補：{len(rooms)} 件")
+        self._update_basis_availability()
+
+    @property
+    def area_basis(self) -> str:
+        """現在選択されている面積基準 ("inner" / "centerline")。"""
+        return self._area_basis
+
+    def set_area_basis(self, basis: str) -> None:
+        """面積基準を切り替え、一覧表示を更新する。"""
+        if basis not in ("inner", "centerline"):
+            return
+        if basis == "centerline" and not self._has_centerline_area():
+            basis = "inner"
+        if basis == self._area_basis:
+            return
+        self._area_basis = basis
+        index = self._basis_combo.findData(basis)
+        if index >= 0:
+            self._basis_combo.blockSignals(True)
+            self._basis_combo.setCurrentIndex(index)
+            self._basis_combo.blockSignals(False)
+        self._refresh_list()
+        self.area_basis_changed.emit(basis)
+
+    def _has_centerline_area(self) -> bool:
+        return any(
+            room.properties.get("area_centerline_m2") is not None
+            for room in self._rooms.values()
+        )
+
+    def _update_basis_availability(self) -> None:
+        """壁芯面積がある部屋がない場合、壁芯の選択肢を無効化する。"""
+        available = self._has_centerline_area()
+        item = self._basis_combo.model().item(1)
+        if item is not None:
+            item.setEnabled(available)
+        if not available and self._area_basis == "centerline":
+            self._area_basis = "inner"
+            self._basis_combo.blockSignals(True)
+            self._basis_combo.setCurrentIndex(0)
+            self._basis_combo.blockSignals(False)
+
+    def _refresh_list(self) -> None:
+        """一覧の表示を現在の部屋情報と面積基準で更新する。"""
+        for row in range(self._room_list.count()):
+            item = self._room_list.item(row)
+            room = self._rooms.get(item.data(Qt.ItemDataRole.UserRole))
+            if room is not None:
+                item.setText(self._room_item_text(row + 1, room))
 
     def select_room(self, room_id: str) -> None:
         """指定した部屋を一覧で選択し、編集欄に表示する。"""
@@ -121,18 +184,20 @@ class RoomPanel(QWidget):
     # 内部処理
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _room_item_text(index: int, room: Room) -> str:
+    def _room_item_text(self, index: int, room: Room) -> str:
         name = room.room_name or "（未判定）"
         status = REVIEW_STATUS_LABELS.get(room.review_status, "要確認")
-        return f"{index}. {name} — {room.area_m2:.2f} m² [{status}]"
+        area, basis = display_area(room, self._area_basis)
+        suffix = "（壁芯）" if basis == "centerline" else ""
+        return f"{index}. {name} — {area:.2f} m²{suffix} [{status}]"
 
-    @staticmethod
-    def _room_info_text(room: Room) -> str:
+    def _room_info_text(self, room: Room) -> str:
         status = REVIEW_STATUS_LABELS.get(room.review_status, "要確認")
         candidate = room.properties.get("candidate_type", "unknown")
+        area, basis = display_area(room, self._area_basis)
+        basis_label = "壁芯" if basis == "centerline" else "内法"
         return (
-            f"面積：{room.area_m2:.2f} m²\n"
+            f"面積：{area:.2f} m²（{basis_label}）\n"
             f"状態：{status}\n"
             f"候補種別：{candidate}\n"
             f"確信度：{room.confidence:.2f}"
@@ -154,6 +219,14 @@ class RoomPanel(QWidget):
             if item.data(Qt.ItemDataRole.UserRole) == room_id:
                 item.setText(self._room_item_text(row + 1, room))
                 return
+
+    def _on_basis_changed(self, _index: int) -> None:
+        basis = self._basis_combo.currentData()
+        if basis not in ("inner", "centerline") or basis == self._area_basis:
+            return
+        self._area_basis = basis
+        self._refresh_list()
+        self.area_basis_changed.emit(basis)
 
     def _on_list_selection_changed(self, current, _previous) -> None:
         if current is None:

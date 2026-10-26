@@ -99,6 +99,36 @@ def test_panel_status_buttons_emit_change():
     assert "[却下]" in panel._room_list.item(0).text()
 
 
+def test_panel_area_basis_switch_updates_list():
+    _ensure_qt_app()
+    panel = RoomPanel()
+    rooms = _rooms()
+    rooms[0].properties["area_centerline_m2"] = 12.5
+    panel.set_rooms(rooms)
+    changed = []
+    panel.area_basis_changed.connect(changed.append)
+
+    panel.set_area_basis("centerline")
+    assert panel.area_basis == "centerline"
+    assert panel._room_list.item(0).text() == "1. 和室 — 12.50 m²（壁芯） [要確認]"
+    # 壁芯面積のない部屋は内法のまま表示される。
+    assert panel._room_list.item(1).text() == "2. （未判定） — 20.00 m² [要確認]"
+
+    panel._basis_combo.setCurrentIndex(0)
+    assert changed == ["centerline", "inner"]
+    assert panel._room_list.item(0).text() == "1. 和室 — 10.50 m² [要確認]"
+
+
+def test_panel_centerline_option_disabled_without_centerline_area():
+    _ensure_qt_app()
+    panel = RoomPanel()
+    panel.set_rooms(_rooms())
+    item = panel._basis_combo.model().item(1)
+    assert not item.isEnabled()
+    panel.set_area_basis("centerline")
+    assert panel.area_basis == "inner"
+
+
 def test_panel_clear_resets():
     _ensure_qt_app()
     panel = RoomPanel()

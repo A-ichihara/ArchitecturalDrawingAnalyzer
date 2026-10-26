@@ -128,6 +128,22 @@ def test_export_rooms_dispatches_by_suffix(tmp_path):
         export_rooms(rooms, tmp_path / "out.txt", exported_at=FIXED_TIME)
 
 
+def test_export_with_centerline_basis(tmp_path):
+    _, rooms = _sample_rooms("sample_02_multi_rect.dxf")
+    rooms[0].properties["area_centerline_m2"] = 13.44
+    rooms[0].wall_type = "inner"
+    # 2 件目は壁芯面積がないため内法のまま出力される。
+    path = tmp_path / "rooms.csv"
+    export_rooms_csv(rooms, path, exported_at=FIXED_TIME, area_basis="centerline")
+
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.reader(f))
+    assert rows[6][2] == "13.44"
+    assert rows[6][4] == "壁芯"
+    assert rows[7][2] == "12.00"
+    assert rows[7][4] == "不明"
+
+
 def test_room_review_status_defaults_and_validation():
     room = Room(room_id="R1", room_name="", area_m2=10.0)
     assert room.review_status == "to_confirm"
