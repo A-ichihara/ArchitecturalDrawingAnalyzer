@@ -24,6 +24,12 @@ from core.drawing_viewer.renderers import DxfRenderer
 from core.parser.dxf_parser import DxfParser
 from core.models.drawing import Drawing, DrawingElement
 from core.analyzer.drawing_analyzer import DrawingAnalyzer
+from core.analyzer.room_detector import (
+    associate_room_names,
+    detect_closed_polyline_room_candidates,
+    detect_linework_room_candidates,
+    deduplicate_room_candidates,
+)
 
 from ui.panels.layer_panel import LayerPanel
 from ui.panels.property_panel import PropertyPanel
@@ -54,6 +60,27 @@ class DxfLoadWorker(QObject):
             self.error.emit(self._file_path, str(e))
 
 
+class RoomDetectionWorker(QObject):
+    """部屋候補の検出をGUIスレッドの外で実行する。"""
+
+    finished = Signal(object, object)
+    error = Signal(str)
+
+    def __init__(self, drawing: Drawing):
+        super().__init__()
+        self._drawing = drawing
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            polyline_rooms = detect_closed_polyline_room_candidates(self._drawing)
+            linework_rooms = detect_linework_room_candidates(self._drawing)
+            self.finished.emit(polyline_rooms, linework_rooms)
+        except Exception as exc:
+            logger.exception("部屋候補の検出に失敗しました")
+            self.error.emit(str(exc))
+
+
 # ---------------------------------------------------------------------------
 # メインウィンドウ
 # ---------------------------------------------------------------------------
@@ -80,6 +107,8 @@ class MainWindow(QMainWindow):
         self._drawing: Optional[Drawing] = None
         self._load_thread: Optional[QThread] = None
         self._worker: Optional[DxfLoadWorker] = None
+        self._room_thread: Optional[QThread] = None
+        self._room_worker: Optional[RoomDetectionWorker] = None
 
         self._setup_ui()
         self._setup_logging()
@@ -134,6 +163,12 @@ class MainWindow(QMainWindow):
         self._act_open.setStatusTip("DXFファイルを開いて図面を表示します")
         self._act_open.triggered.connect(self._open_dxf)
         toolbar.addAction(self._act_open)
+
+        self._act_detect_rooms = QAction("部屋候補を検出", self)
+        self._act_detect_rooms.setEnabled(False)
+        self._act_detect_rooms.setStatusTip("閉じたポリライン・接続線分から仮の部屋領域を抽出します")
+        self._act_detect_rooms.triggered.connect(self._detect_room_candidates)
+        toolbar.addAction(self._act_detect_rooms)
 
         toolbar.addSeparator()
 
@@ -294,11 +329,15 @@ class MainWindow(QMainWindow):
         同時に複数の読み込みスレッドを起動しないようにし、
         完了後にスレッドとワーカーの参照を安全に解放する。
         """
+        if self._room_thread is not None and self._room_thread.isRunning():
+            self._log("warn", "部屋候補の解析中は別のDXFを開けません。")
+            return
         if self._load_thread is not None and self._load_thread.isRunning():
             self._log("warn", "別のDXFを読み込み中のため、新しい読み込みを開始しませんでした。")
             return
 
         self._act_open.setEnabled(False)
+        self._act_detect_rooms.setEnabled(False)
         filename = os.path.basename(file_path)
         self._label_file.setText(f"ファイル：{filename}")
         self._label_status.setText("状態：読み込み中...")
@@ -325,6 +364,7 @@ class MainWindow(QMainWindow):
         self._worker = None
         self._load_thread = None
         self._act_open.setEnabled(True)
+        self._act_detect_rooms.setEnabled(self._drawing is not None)
 
     def _on_load_finished(self, file_path: str, drawing: Drawing) -> None:
         """DXF読み込み完了時の処理。"""
@@ -337,6 +377,10 @@ class MainWindow(QMainWindow):
         self._current_file = file_path
         self._update_title()
         self._drawing = drawing
+        self._act_detect_rooms.setEnabled(True)
+        self._label_coords.setText(
+            f"座標：(0.00, 0.00) {self._coordinate_unit_suffix()}"
+        )
 
         # レンダリング
         self._renderer.render(drawing, self._scene)
@@ -386,6 +430,64 @@ class MainWindow(QMainWindow):
             f"詳細：\n{message}",
         )
 
+    def _detect_room_candidates(self) -> None:
+        """GUIをブロックせずに暫定的な部屋候補を検出する。"""
+        if self._drawing is None or self._room_thread is not None:
+            return
+        self._act_detect_rooms.setEnabled(False)
+        self._act_open.setEnabled(False)
+        self._label_status.setText("状態：部屋候補を解析中...")
+        self._room_thread = QThread(self)
+        self._room_worker = RoomDetectionWorker(self._drawing)
+        self._room_worker.moveToThread(self._room_thread)
+        self._room_thread.started.connect(self._room_worker.run)
+        self._room_worker.finished.connect(self._on_room_detection_finished)
+        self._room_worker.error.connect(self._on_room_detection_error)
+        self._room_worker.finished.connect(self._room_thread.quit)
+        self._room_worker.error.connect(self._room_thread.quit)
+        self._room_worker.finished.connect(self._room_worker.deleteLater)
+        self._room_worker.error.connect(self._room_worker.deleteLater)
+        self._room_thread.finished.connect(self._on_room_thread_finished)
+        self._room_thread.finished.connect(self._room_thread.deleteLater)
+        self._room_thread.start()
+
+    @Slot()
+    def _on_room_thread_finished(self) -> None:
+        self._room_worker = None
+        self._room_thread = None
+        self._act_detect_rooms.setEnabled(self._drawing is not None)
+        self._act_open.setEnabled(True)
+
+    @Slot(str)
+    def _on_room_detection_error(self, message: str) -> None:
+        self._label_status.setText("状態：部屋候補の解析失敗")
+        self._log("error", f"部屋候補の検出に失敗: {message}")
+        QMessageBox.warning(self, "部屋候補の検出", f"解析に失敗しました。\n{message}")
+
+    @Slot(object, object)
+    def _on_room_detection_finished(self, polyline_rooms: list, linework_rooms: list) -> None:
+        self._label_status.setText("状態：部屋候補の解析完了")
+        rooms = deduplicate_room_candidates(polyline_rooms, linework_rooms)
+        if self._drawing is not None:
+            rooms = associate_room_names(self._drawing, rooms)
+        self._log("info", f"部屋候補: ポリライン {len(polyline_rooms)} 件 / 線分 {len(linework_rooms)} 件")
+        if not rooms:
+            QMessageBox.information(self, "部屋候補の検出", "閉じた領域候補は見つかりませんでした。")
+            return
+        lines = [
+            f"{index}. {room.room_name or '（部屋名未判定）'} / {room.area_m2:.2f} ㎡（{room.properties.get('candidate_type', 'unknown')}）"
+            for index, room in enumerate(rooms, start=1)
+        ]
+        preview = "\n".join(lines[:30])
+        if len(lines) > 30:
+            preview += f"\n…ほか {len(lines) - 30} 件"
+        QMessageBox.information(
+            self, "部屋候補の検出",
+            f"暫定的な閉領域候補: {len(rooms)} 件\n"
+            "※ 部屋名は領域内に文字が1つだけある場合に限り暫定表示します。壁芯は未判定で、部分的に重なる候補は残る場合があります。\n\n"
+            + preview,
+        )
+
     def _fit_view(self) -> None:
         """全体表示を実行する。"""
         self._view.fit_in_view()
@@ -394,9 +496,24 @@ class MainWindow(QMainWindow):
         """ズーム倍率変更時にステータスバーを更新する。"""
         self._label_zoom.setText(f"ズーム：{zoom * 100:.1f}%")
 
+    def _coordinate_unit_suffix(self) -> str:
+        """現在の図面座標に対応する単位表示を返す。"""
+        units = (self._drawing.units if self._drawing is not None else "mm") or "mm"
+        normalized = str(units).strip().lower()
+        aliases = {
+            "millimeter": "mm", "millimeters": "mm",
+            "centimeter": "cm", "centimeters": "cm",
+            "meter": "m", "meters": "m",
+            "inch": "in", "inches": "in",
+            "foot": "ft", "feet": "ft",
+        }
+        return aliases.get(normalized, normalized)
+
     def _on_mouse_world_pos_changed(self, x: float, y: float) -> None:
         """マウス移動時にワールド座標表示を更新する。"""
-        self._label_coords.setText(f"座標：({x:.2f}, {y:.2f}) mm")
+        self._label_coords.setText(
+            f"座標：({x:.2f}, {y:.2f}) {self._coordinate_unit_suffix()}"
+        )
 
     def _on_layer_visibility_changed(self, layer_name: str, visible: bool) -> None:
         """レイヤーパネルで表示トグルが変更されたときの処理。"""

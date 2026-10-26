@@ -63,7 +63,14 @@ class DxfRenderer:
         skipped = 0
 
         for element in drawing.elements:
-            item = self._create_item(element)
+            try:
+                item = self._create_item(element)
+            except Exception as exc:
+                # A malformed entity must not prevent the remaining drawing
+                # elements from being displayed.
+                logger.warning("描画要素の処理失敗 (%s): %s", getattr(element, "element_id", "?"), exc)
+                skipped += 1
+                continue
             if item is not None:
                 # 要素IDと選択可能性を設定
                 item.setData(Qt.ItemDataRole.UserRole, element.element_id)
@@ -117,8 +124,12 @@ class DxfRenderer:
     def _get_pen(self, element: DrawingElement, width: float = DEFAULT_LINE_WIDTH) -> QPen:
         """要素のカラーコードから QPen を生成する。"""
         color_code = element.color
-        if color_code is not None and int(color_code) in _ACI_COLORS:
-            color = QColor(_ACI_COLORS[int(color_code)])
+        try:
+            aci = int(color_code) if color_code is not None else None
+        except (TypeError, ValueError, OverflowError):
+            aci = None
+        if aci in _ACI_COLORS:
+            color = QColor(_ACI_COLORS[aci])
         else:
             color = DEFAULT_LINE_COLOR
 
@@ -251,7 +262,9 @@ class DxfRenderer:
         group = QGraphicsItemGroup()
         x = element.insert_point[0]
         y = self._y(element.insert_point[1])
+        # 未展開のブロック参照を表すマーカー。倍率や回転はマーカー自体には適用しない。
         s = 50.0  # ブロック挿入点用の標準マーカーサイズ (50mm)
+        # INSERTは参照情報のみ保持しており、現状はブロック本体でなくマーカーを描画する。
         pen = self._get_pen(element)
 
         l1 = QGraphicsLineItem(x - s, y, x + s, y)

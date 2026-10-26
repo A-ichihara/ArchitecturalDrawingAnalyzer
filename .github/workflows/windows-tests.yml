@@ -68,3 +68,11 @@ jobs:
           if (!(Test-Path "dist/ArchitecturalDrawingAnalyzer/ArchitecturalDrawingAnalyzer.exe")) {
             throw "PyInstaller output executable was not found."
           }
+
+      - name: Upload Windows application
+        uses: actions/upload-artifact@v4
+        with:
+          name: ArchitecturalDrawingAnalyzer-Windows-Python312
+          path: dist/ArchitecturalDrawingAnalyzer/
+          if-no-files-found: error
+          retention-days: 14
