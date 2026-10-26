@@ -25,12 +25,14 @@ from core.models.room import (
 from core.parser.dxf_parser import DxfParser
 
 SAMPLES_DIR = os.path.join(os.path.dirname(__file__), "..", "samples")
+# テスト用 DXF は追跡対象の data/ を使う（samples/ は生成物で CI には無い）。
+DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 FIXED_TIME = datetime(2026, 10, 26, 22, 30, 0)
 
 
 def _sample_rooms(filename):
     """サンプル DXF から検出した部屋候補（名前関連付け済み）を返す。"""
-    drawing = DxfParser().parse(os.path.join(SAMPLES_DIR, filename))
+    drawing = DxfParser().parse(os.path.join(DATA_DIR, filename))
     polyline_rooms = detect_closed_polyline_room_candidates(drawing)
     linework_rooms = detect_linework_room_candidates(drawing)
     rooms = deduplicate_room_candidates(polyline_rooms, linework_rooms)
@@ -38,20 +40,20 @@ def _sample_rooms(filename):
 
 
 def test_csv_output_contains_meta_header_and_rooms(tmp_path):
-    drawing, rooms = _sample_rooms("sample_01.dxf")
+    drawing, rooms = _sample_rooms("sample_01_rect.dxf")
     assert len(rooms) == 1
     assert rooms[0].area_m2 == pytest.approx(15.0, rel=0.001)
 
     path = tmp_path / "rooms.csv"
     export_rooms_csv(
-        rooms, path, drawing_name="sample_01.dxf",
+        rooms, path, drawing_name="sample_01_rect.dxf",
         units=drawing.units, exported_at=FIXED_TIME,
     )
 
     with open(path, encoding="utf-8-sig", newline="") as f:
         rows = list(csv.reader(f))
     assert rows[0] == ["項目", "値"]
-    assert rows[1] == ["図面", "sample_01.dxf"]
+    assert rows[1] == ["図面", "sample_01_rect.dxf"]
     assert rows[2] == ["単位", "mm"]
     assert rows[3] == ["出力日時", "2026-10-26 22:30:00"]
     assert rows[4] == []
@@ -67,19 +69,19 @@ def test_csv_output_contains_meta_header_and_rooms(tmp_path):
 def test_xlsx_output_matches_csv_values(tmp_path):
     from openpyxl import load_workbook
 
-    drawing, rooms = _sample_rooms("sample_02.dxf")
+    drawing, rooms = _sample_rooms("sample_02_multi_rect.dxf")
     assert len(rooms) == 2
 
     path = tmp_path / "rooms.xlsx"
     export_rooms_xlsx(
-        rooms, path, drawing_name="sample_02.dxf",
+        rooms, path, drawing_name="sample_02_multi_rect.dxf",
         units=drawing.units, exported_at=FIXED_TIME,
     )
 
     wb = load_workbook(path)
     ws = wb["部屋一覧"]
     assert ws["A2"].value == "図面"
-    assert ws["B2"].value == "sample_02.dxf"
+    assert ws["B2"].value == "sample_02_multi_rect.dxf"
     assert ws["B4"].value == "2026-10-26 22:30:00"
     assert [c.value for c in ws[6]] == COLUMNS
     data = [[c.value for c in row] for row in ws.iter_rows(min_row=7, max_row=8)]
@@ -91,7 +93,7 @@ def test_xlsx_output_matches_csv_values(tmp_path):
 
 
 def test_review_status_is_exported(tmp_path):
-    _, rooms = _sample_rooms("sample_02.dxf")
+    _, rooms = _sample_rooms("sample_02_multi_rect.dxf")
     rooms[0].review_status = REVIEW_STATUS_CONFIRMED
     rooms[1].review_status = REVIEW_STATUS_REJECTED
 
@@ -115,7 +117,7 @@ def test_empty_room_list_exports_header_only(tmp_path):
 
 
 def test_export_rooms_dispatches_by_suffix(tmp_path):
-    _, rooms = _sample_rooms("sample_01.dxf")
+    _, rooms = _sample_rooms("sample_01_rect.dxf")
     csv_path = export_rooms(rooms, tmp_path / "out.csv", exported_at=FIXED_TIME)
     xlsx_path = export_rooms(rooms, tmp_path / "out.xlsx", exported_at=FIXED_TIME)
     assert csv_path.suffix == ".csv"
