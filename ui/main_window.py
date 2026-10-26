@@ -33,6 +33,11 @@ from core.analyzer.room_detector import (
     detect_linework_room_candidates,
     deduplicate_room_candidates,
 )
+from core.analyzer.wall_detector import (
+    area_factor_for_units,
+    attach_wall_info,
+    detect_wall_pairs,
+)
 
 from ui.panels.layer_panel import LayerPanel
 from ui.panels.property_panel import PropertyPanel
@@ -500,6 +505,20 @@ class MainWindow(QMainWindow):
         if self._drawing is not None:
             rooms = associate_room_names(self._drawing, rooms)
         self._rooms = rooms
+        # 二重線の壁を検出し、壁芯面積が求まる部屋へ付与する。
+        # 壁の検出に失敗しても部屋候補の表示は妨げない。
+        if self._drawing is not None:
+            try:
+                wall_pairs = detect_wall_pairs(self._drawing)
+                factor = area_factor_for_units(self._drawing.units)
+                attached = attach_wall_info(rooms, wall_pairs, factor)
+                self._log(
+                    "info",
+                    f"二重線の壁: {len(wall_pairs)} 組 / 壁芯面積を算出できた部屋: {attached} 件",
+                )
+            except Exception as exc:
+                logger.exception("二重線の壁の検出に失敗しました")
+                self._log("warn", f"二重線の壁の検出に失敗しました: {exc}")
         self._log("info", f"部屋候補: ポリライン {len(polyline_rooms)} 件 / 線分 {len(linework_rooms)} 件")
         if not rooms:
             self._room_overlay.clear(self._scene)
