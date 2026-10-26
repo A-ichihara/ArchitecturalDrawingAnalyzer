@@ -23,6 +23,7 @@ from core.drawing_viewer.view import DrawingView
 from core.drawing_viewer.renderers import DxfRenderer
 from core.drawing_viewer.room_overlay import ROOM_ITEM_ROLE, RoomOverlayRenderer
 from core.export.room_export import export_rooms
+from core.rooms.review_store import apply_reviews, load_reviews, save_reviews
 from core.parser.dxf_parser import DxfParser
 from core.models.drawing import Drawing, DrawingElement
 from core.models.room import Room
@@ -110,6 +111,7 @@ class MainWindow(QMainWindow):
         self._current_file: Optional[str] = None
         self._drawing: Optional[Drawing] = None
         self._rooms: list[Room] = []
+        self._reviewed_rooms: set[str] = set()  # ユーザーが修正した部屋 ID
         self._room_overlay = RoomOverlayRenderer()
         self._load_thread: Optional[QThread] = None
         self._worker: Optional[DxfLoadWorker] = None
@@ -400,6 +402,7 @@ class MainWindow(QMainWindow):
         self._update_title()
         self._drawing = drawing
         self._rooms = []
+        self._reviewed_rooms = set()
         self._room_overlay.clear(self._scene)
         self._room_panel.clear()
         self._act_export_rooms.setEnabled(False)
@@ -500,6 +503,14 @@ class MainWindow(QMainWindow):
         if self._drawing is not None:
             rooms = associate_room_names(self._drawing, rooms)
         self._rooms = rooms
+        self._reviewed_rooms = set()
+        # 以前に保存した確認内容があれば、検出直後の部屋へ適用する。
+        if self._current_file is not None:
+            saved = load_reviews(self._current_file)
+            applied = apply_reviews(rooms, saved)
+            self._reviewed_rooms = {r.room_id for r in rooms if r.room_id in saved}
+            if applied:
+                self._log("info", f"保存されていた確認内容を {applied} 件の部屋に適用しました。")
         self._log("info", f"部屋候補: ポリライン {len(polyline_rooms)} 件 / 線分 {len(linework_rooms)} 件")
         if not rooms:
             self._room_overlay.clear(self._scene)
@@ -580,12 +591,29 @@ class MainWindow(QMainWindow):
                 break
 
     def _on_room_name_changed(self, room_id: str, _new_name: str) -> None:
-        """部屋名の編集をオーバーレイへ反映する。"""
+        """部屋名の編集をオーバーレイへ反映し、保存する。"""
+        self._reviewed_rooms.add(room_id)
+        self._save_reviews()
         self._rerender_room_overlay()
 
     def _on_room_status_changed(self, room_id: str, _new_status: str) -> None:
-        """確認状態の変更をオーバーレイへ反映する。"""
+        """確認状態の変更をオーバーレイへ反映し、保存する。"""
+        self._reviewed_rooms.add(room_id)
+        self._save_reviews()
         self._rerender_room_overlay()
+
+    def _save_reviews(self) -> None:
+        """現在の確認内容を DXF 横の保存ファイルへ書き出す。
+
+        保存に失敗しても作業は続けられるよう、警告ログに留める。
+        """
+        if self._current_file is None or not self._rooms:
+            return
+        try:
+            save_reviews(self._current_file, self._rooms, self._reviewed_rooms)
+        except OSError as exc:
+            logger.exception("部屋の確認内容の保存に失敗しました")
+            self._log("warn", f"確認内容を保存できませんでした（{exc}）。図面フォルダへの書き込み権限を確認してください。")
 
     def _rerender_room_overlay(self) -> None:
         """現在の部屋一覧でオーバーレイを描き直す。"""
