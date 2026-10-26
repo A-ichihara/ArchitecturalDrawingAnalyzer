@@ -18,11 +18,14 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QThread, Signal, QObject, Slot
 from PySide6.QtGui import QAction, QIcon, QKeySequence, QColor
 
-from core.drawing_viewer.scene import DrawingScene
+from core.drawing_viewer.scene import DrawingScene, DrawingLayer
 from core.drawing_viewer.view import DrawingView
 from core.drawing_viewer.renderers import DxfRenderer
+from core.drawing_viewer.room_overlay import ROOM_ITEM_ROLE, RoomOverlayRenderer
+from core.export.room_export import export_rooms
 from core.parser.dxf_parser import DxfParser
 from core.models.drawing import Drawing, DrawingElement
+from core.models.room import Room
 from core.analyzer.drawing_analyzer import DrawingAnalyzer
 from core.analyzer.room_detector import (
     associate_room_names,
@@ -34,6 +37,7 @@ from core.analyzer.room_detector import (
 from ui.panels.layer_panel import LayerPanel
 from ui.panels.property_panel import PropertyPanel
 from ui.panels.element_tree import ElementTreePanel
+from ui.panels.room_panel import RoomPanel
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +109,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._current_file: Optional[str] = None
         self._drawing: Optional[Drawing] = None
+        self._rooms: list[Room] = []
+        self._room_overlay = RoomOverlayRenderer()
         self._load_thread: Optional[QThread] = None
         self._worker: Optional[DxfLoadWorker] = None
         self._room_thread: Optional[QThread] = None
@@ -170,6 +176,12 @@ class MainWindow(QMainWindow):
         self._act_detect_rooms.triggered.connect(self._detect_room_candidates)
         toolbar.addAction(self._act_detect_rooms)
 
+        self._act_export_rooms = QAction("💾 部屋一覧を出力", self)
+        self._act_export_rooms.setEnabled(False)
+        self._act_export_rooms.setStatusTip("確認した部屋一覧を CSV / Excel で保存します")
+        self._act_export_rooms.triggered.connect(self._export_rooms)
+        toolbar.addAction(self._act_export_rooms)
+
         toolbar.addSeparator()
 
         # 全体表示
@@ -208,13 +220,23 @@ class MainWindow(QMainWindow):
         self._left_dock.setWidget(tab_left)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._left_dock)
 
-        # 右ドック (プロパティ)
+        # 右ドック (プロパティ + 部屋一覧)
         self._right_dock = QDockWidget("要素プロパティ", self)
         self._right_dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
-        
+
+        tab_right = QTabWidget()
         self._property_panel = PropertyPanel()
-        self._right_dock.setWidget(self._property_panel)
+        self._room_panel = RoomPanel()
+        tab_right.addTab(self._property_panel, "要素プロパティ")
+        tab_right.addTab(self._room_panel, "部屋一覧")
+        self._right_tabs = tab_right
+        self._right_dock.setWidget(tab_right)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._right_dock)
+
+        # 部屋パネルのシグナル接続
+        self._room_panel.room_selected.connect(self._on_room_panel_selected)
+        self._room_panel.room_name_changed.connect(self._on_room_name_changed)
+        self._room_panel.room_status_changed.connect(self._on_room_status_changed)
 
     def _setup_statusbar(self) -> None:
         statusbar = QStatusBar()
@@ -377,6 +399,10 @@ class MainWindow(QMainWindow):
         self._current_file = file_path
         self._update_title()
         self._drawing = drawing
+        self._rooms = []
+        self._room_overlay.clear(self._scene)
+        self._room_panel.clear()
+        self._act_export_rooms.setEnabled(False)
         self._act_detect_rooms.setEnabled(True)
         self._label_coords.setText(
             f"座標：(0.00, 0.00) {self._coordinate_unit_suffix()}"
@@ -473,23 +499,21 @@ class MainWindow(QMainWindow):
         rooms = deduplicate_room_candidates(polyline_rooms, linework_rooms)
         if self._drawing is not None:
             rooms = associate_room_names(self._drawing, rooms)
+        self._rooms = rooms
         self._log("info", f"部屋候補: ポリライン {len(polyline_rooms)} 件 / 線分 {len(linework_rooms)} 件")
         if not rooms:
+            self._room_overlay.clear(self._scene)
+            self._room_panel.clear()
+            self._act_export_rooms.setEnabled(False)
             QMessageBox.information(self, "部屋候補の検出", "閉じた領域候補は見つかりませんでした。")
             return
-        lines = [
-            f"{index}. {room.room_name or '（部屋名未判定）'} / {room.area_m2:.2f} ㎡（{room.properties.get('candidate_type', 'unknown')}）"
-            for index, room in enumerate(rooms, start=1)
-        ]
-        preview = "\n".join(lines[:30])
-        if len(lines) > 30:
-            preview += f"\n…ほか {len(lines) - 30} 件"
-        QMessageBox.information(
-            self, "部屋候補の検出",
-            f"暫定的な閉領域候補: {len(rooms)} 件\n"
-            "※ 部屋名は領域内に文字が1つだけある場合に限り暫定表示します。壁芯は未判定で、部分的に重なる候補は残る場合があります。\n\n"
-            + preview,
-        )
+        # 図面上に部屋候補を重ねて表示し、部屋一覧パネルに反映する。
+        self._room_overlay.clear(self._scene)
+        self._room_overlay.render_rooms(rooms, self._scene)
+        self._room_panel.set_rooms(rooms)
+        self._act_export_rooms.setEnabled(True)
+        self._label_status.setText(f"状態：部屋候補 {len(rooms)} 件を検出")
+        self._log("info", f"部屋候補 {len(rooms)} 件を図面に表示しました。部屋をクリックして名前や状態を確認できます。")
 
     def _fit_view(self) -> None:
         """全体表示を実行する。"""
@@ -525,15 +549,77 @@ class MainWindow(QMainWindow):
     def _on_scene_selection_changed(self) -> None:
         """ビュー上で要素の選択状態が変更されたときの処理。"""
         selected_items = self._scene.selectedItems()
-        if not selected_items or self._drawing is None:
+        if not selected_items:
             self._property_panel.clear()
             return
 
         item = selected_items[0]
+        room_id = item.data(ROOM_ITEM_ROLE)
+        if room_id:
+            room = next((r for r in self._rooms if r.room_id == room_id), None)
+            if room is not None:
+                self._room_panel.select_room(room_id)
+                self._room_panel.show_room(room)
+                self._right_tabs.setCurrentWidget(self._room_panel)
+                return
+        if self._drawing is None:
+            self._property_panel.clear()
+            return
         element_id = item.data(Qt.ItemDataRole.UserRole)
         if element_id:
             elem = self._drawing.get_element_by_id(element_id)
             self._property_panel.show_element(elem)
+            self._right_tabs.setCurrentWidget(self._property_panel)
+
+    def _on_room_panel_selected(self, room_id: str) -> None:
+        """部屋一覧パネルで部屋が選ばれたら、図面上の該当オーバーレイを選択する。"""
+        self._scene.clearSelection()
+        for item in self._scene.items():
+            if item.data(ROOM_ITEM_ROLE) == room_id:
+                item.setSelected(True)
+                break
+
+    def _on_room_name_changed(self, room_id: str, _new_name: str) -> None:
+        """部屋名の編集をオーバーレイへ反映する。"""
+        self._rerender_room_overlay()
+
+    def _on_room_status_changed(self, room_id: str, _new_status: str) -> None:
+        """確認状態の変更をオーバーレイへ反映する。"""
+        self._rerender_room_overlay()
+
+    def _rerender_room_overlay(self) -> None:
+        """現在の部屋一覧でオーバーレイを描き直す。"""
+        self._room_overlay.clear(self._scene)
+        if self._rooms:
+            self._room_overlay.render_rooms(self._rooms, self._scene)
+
+    def _export_rooms(self) -> None:
+        """確認した部屋一覧を CSV / Excel で保存する。"""
+        if not self._rooms or self._drawing is None:
+            return
+        default_name = os.path.splitext(os.path.basename(self._current_file or "rooms"))[0]
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "部屋一覧を保存",
+            f"{default_name}_rooms.csv",
+            "CSV ファイル (*.csv);;Excel ファイル (*.xlsx)",
+        )
+        if not file_path:
+            return
+        try:
+            export_rooms(
+                self._rooms,
+                file_path,
+                drawing_name=os.path.basename(self._current_file or ""),
+                units=self._drawing.units,
+            )
+        except Exception as exc:
+            logger.exception("部屋一覧の出力に失敗しました")
+            self._log("error", f"部屋一覧の出力に失敗: {exc}")
+            QMessageBox.warning(self, "部屋一覧の出力", f"保存に失敗しました。\n{exc}")
+            return
+        self._log("info", f"部屋一覧を保存しました: {file_path}（{len(self._rooms)} 件）")
+        self._label_status.setText("状態：部屋一覧を保存しました")
 
     def _on_tree_element_selected(self, element_id: str) -> None:
         """ツリーパネルで要素が選択されたときの処理。"""
