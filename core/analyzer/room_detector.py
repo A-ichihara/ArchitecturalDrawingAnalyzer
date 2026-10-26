@@ -334,35 +334,33 @@ def detect_linework_room_candidates(
 
 
 def deduplicate_room_candidates(polyline_rooms: List[Room], linework_rooms: List[Room]) -> List[Room]:
-    """Suppress coincident linework candidates when a closed polyline already exists.
+    """Suppress geometrically identical room candidates.
 
-    Geometric equality is evaluated using symmetric-difference area, not vertex
+    Closed-polyline candidates take priority over linework candidates, and
+    identical geometry is kept only once no matter which detector produced
+    it (for example the same boundary drawn on two layers). Geometric
+    equality is evaluated using symmetric-difference area, not vertex
     order. Partial overlaps and adjacent rooms remain separate candidates.
+    Candidates whose boundary cannot form a valid polygon are dropped
+    instead of being passed through unchecked.
     """
-    accepted = list(polyline_rooms)
+    accepted: List[Room] = []
     polygons = []
-    for room in polyline_rooms:
+    for room in list(polyline_rooms) + list(linework_rooms):
         try:
             polygon = Polygon(room.boundary)
-            if polygon.is_valid and not polygon.is_empty and polygon.area > 0:
-                polygons.append(polygon)
         except (TypeError, ValueError):
             continue
-
-    for room in linework_rooms:
-        try:
-            polygon = Polygon(room.boundary)
-            if polygon.is_valid and not polygon.is_empty and polygon.area > 0:
-                duplicate = any(
-                    polygon.symmetric_difference(existing).area
-                    <= max(polygon.area, existing.area) * 1e-9
-                    for existing in polygons
-                )
-                if duplicate:
-                    continue
-                polygons.append(polygon)
-        except (TypeError, ValueError):
-            pass
+        if polygon.is_empty or not polygon.is_valid or polygon.area <= 0:
+            continue
+        duplicate = any(
+            polygon.symmetric_difference(existing).area
+            <= max(polygon.area, existing.area) * 1e-9
+            for existing in polygons
+        )
+        if duplicate:
+            continue
+        polygons.append(polygon)
         accepted.append(room)
     return accepted
 

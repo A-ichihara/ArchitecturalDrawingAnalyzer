@@ -8,8 +8,8 @@ class Room:
     room_name: str
     area_m2: float
     boundary: List[List[float]] = field(default_factory=list)  # 境界ポリゴン [[x1, y1], [x2, y2], ...]
-    wall_type: str = "centerline"  # "centerline" (壁芯), "inner" (内法), "outer" (外法)
-    confidence: float = 1.0  # 解析結果の信頼度 (0.0 - 1.0)
+    wall_type: str = "unknown"  # "centerline" (壁芯), "inner" (内法), "outer" (外法), "unknown" (未判定)
+    confidence: float = 0.0  # 解析結果の信頼度 (0.0 - 1.0)。未判定の既定値は 0.0
     properties: Dict[str, Any] = field(default_factory=dict)  # 将来の拡張用属性
 
     # 便利プロパティ（将来追加される天井高や容積などへのアクセス用ヘルパー）
