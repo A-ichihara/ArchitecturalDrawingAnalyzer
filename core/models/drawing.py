@@ -230,8 +230,9 @@ class ArcElement(DrawingElement):
 class InsertElement(DrawingElement):
     """
     INSERT エンティティ（ブロック参照）。
-    Phase 2 では存在検出と基本情報の保持を行う。
-    ブロック内部の展開は Phase 3 以降。
+    展開できる参照はパーサーがブロック内容を図形要素に展開する。
+    展開できない参照（未定義ブロック等）のみ InsertElement として残り、
+    ビューアではマーカー表示される。
     """
     block_name: str = ""
     insert_point: List[float] = field(default_factory=lambda: [0.0, 0.0])  # [x, y]
