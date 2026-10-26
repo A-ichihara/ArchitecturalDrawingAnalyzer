@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QToolBar, QStatusBar, QFileDialog, QMessageBox,
     QLabel, QSizePolicy, QDockWidget, QTextEdit, QPushButton,
-    QTabWidget
+    QTabWidget, QComboBox
 )
 from PySide6.QtCore import Qt, QThread, Signal, QObject, Slot
 from PySide6.QtGui import QAction, QIcon, QKeySequence, QColor
@@ -115,6 +115,7 @@ class MainWindow(QMainWindow):
         self._current_file: Optional[str] = None
         self._drawing: Optional[Drawing] = None
         self._rooms: list[Room] = []
+        self._deleted_room_ids: set[str] = set()
         self._area_basis: str = "inner"
         self._room_overlay = RoomOverlayRenderer()
         self._load_thread: Optional[QThread] = None
@@ -190,6 +191,21 @@ class MainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
+        # 図面単位の確認・変更（読み込み後に有効になる）。
+        # 変更すると部屋の検出から面積まで再計算される。
+        toolbar.addWidget(QLabel("単位"))
+        self._units_combo = QComboBox()
+        for units in ("mm", "cm", "m", "in", "ft"):
+            self._units_combo.addItem(units, units)
+        self._units_combo.setEnabled(False)
+        self._units_combo.setStatusTip(
+            "図面の単位を変更します。変更後は部屋候補と面積を再計算します"
+        )
+        self._units_combo.currentIndexChanged.connect(self._on_units_changed)
+        toolbar.addWidget(self._units_combo)
+
+        toolbar.addSeparator()
+
         # 全体表示
         act_fit = QAction("🔭 全体表示", self)
         act_fit.setShortcut("F")
@@ -244,6 +260,7 @@ class MainWindow(QMainWindow):
         self._room_panel.room_name_changed.connect(self._on_room_name_changed)
         self._room_panel.room_status_changed.connect(self._on_room_status_changed)
         self._room_panel.area_basis_changed.connect(self._on_area_basis_changed)
+        self._room_panel.room_deleted.connect(self._on_room_deleted)
 
     def _setup_statusbar(self) -> None:
         statusbar = QStatusBar()
@@ -407,12 +424,17 @@ class MainWindow(QMainWindow):
         self._update_title()
         self._drawing = drawing
         self._rooms = []
+        self._deleted_room_ids = set()
         self._area_basis = "inner"
         self._room_overlay.clear(self._scene)
         self._room_panel.clear()
         self._room_panel.set_area_basis("inner")
         self._act_export_rooms.setEnabled(False)
         self._act_detect_rooms.setEnabled(True)
+        self._units_combo.blockSignals(True)
+        self._units_combo.setCurrentIndex(self._units_combo.findData(drawing.units))
+        self._units_combo.blockSignals(False)
+        self._units_combo.setEnabled(True)
         self._label_coords.setText(
             f"座標：(0.00, 0.00) {self._coordinate_unit_suffix()}"
         )
@@ -508,6 +530,9 @@ class MainWindow(QMainWindow):
         rooms = deduplicate_room_candidates(polyline_rooms, linework_rooms)
         if self._drawing is not None:
             rooms = associate_room_names(self._drawing, rooms)
+        # このセッションで削除した部屋は、再検出でも復活させない。
+        if self._deleted_room_ids:
+            rooms = [r for r in rooms if r.room_id not in self._deleted_room_ids]
         self._rooms = rooms
         # 二重線の壁を検出し、壁芯面積が求まる部屋へ付与する。
         # 壁の検出に失敗しても部屋候補の表示は妨げない。
@@ -596,6 +621,32 @@ class MainWindow(QMainWindow):
             self._property_panel.show_element(elem)
             self._right_tabs.setCurrentWidget(self._property_panel)
 
+    def _on_units_changed(self, _index: int) -> None:
+        """図面単位の変更を検出結果と面積へ反映する。"""
+        if self._drawing is None:
+            return
+        new_units = self._units_combo.currentData()
+        if new_units not in ("mm", "cm", "m", "in", "ft"):
+            return
+        if new_units == self._drawing.units:
+            return
+        if self._room_thread is not None:
+            self._log("warn", "部屋候補の解析中のため、単位の変更を後でもう一度行ってください。")
+            self._units_combo.blockSignals(True)
+            self._units_combo.setCurrentIndex(self._units_combo.findData(self._drawing.units))
+            self._units_combo.blockSignals(False)
+            return
+        old_units = self._drawing.units
+        self._drawing.units = new_units
+        meta = getattr(self._drawing, "_meta", {})
+        meta["units_source"] = "user_override"
+        meta.pop("units_warning", None)
+        self._label_coords.setText(
+            f"座標：(0.00, 0.00) {self._coordinate_unit_suffix()}"
+        )
+        self._log("info", f"図面単位を {old_units} から {new_units} に変更しました。部屋候補を再計算します。")
+        self._detect_room_candidates()
+
     def _on_room_panel_selected(self, room_id: str) -> None:
         """部屋一覧パネルで部屋が選ばれたら、図面上の該当オーバーレイを選択する。"""
         self._scene.clearSelection()
@@ -611,6 +662,21 @@ class MainWindow(QMainWindow):
     def _on_room_status_changed(self, room_id: str, _new_status: str) -> None:
         """確認状態の変更をオーバーレイへ反映する。"""
         self._rerender_room_overlay()
+
+    def _on_room_deleted(self, room_id: str) -> None:
+        """削除された部屋を一覧と図面から取り除く。
+
+        削除はこのセッション内のみ有効で、図面を読み込み直すと
+        検出からやり直す。削除の保存は、確認内容の保存（PR #21）
+        とあわせて対応する予定。
+        """
+        self._rooms = [room for room in self._rooms if room.room_id != room_id]
+        self._deleted_room_ids.add(room_id)
+        self._area_basis = self._room_panel.area_basis
+        self._rerender_room_overlay()
+        self._act_export_rooms.setEnabled(bool(self._rooms))
+        self._label_status.setText(f"状態：部屋候補 {len(self._rooms)} 件")
+        self._log("info", f"部屋候補を削除しました：{room_id}（残り {len(self._rooms)} 件）")
 
     def _on_area_basis_changed(self, basis: str) -> None:
         """面積基準の切り替えをオーバーレイと一覧へ反映する。"""
@@ -675,12 +741,24 @@ class MainWindow(QMainWindow):
 
     def _setup_logging(self) -> None:
         """アプリログをログドックへも出力するハンドラーを設定する。"""
-        handler = _QtLogHandler(self._log_text)
-        handler.setLevel(logging.DEBUG)
+        self._log_handler = _QtLogHandler(self._log_text)
+        self._log_handler.setLevel(logging.DEBUG)
         formatter = logging.Formatter("[%(levelname)s] %(name)s: %(message)s")
-        handler.setFormatter(formatter)
-        logging.getLogger().addHandler(handler)
+        self._log_handler.setFormatter(formatter)
+        logging.getLogger().addHandler(self._log_handler)
         logging.getLogger().setLevel(logging.DEBUG)
+
+    def closeEvent(self, event) -> None:
+        """ウィンドウを閉じるとき、ログハンドラーを外す。
+
+        外さないと、削除済みのウィンドウへログを送ろうとして
+        エラーが繰り返し出る。
+        """
+        handler = getattr(self, "_log_handler", None)
+        if handler is not None:
+            logging.getLogger().removeHandler(handler)
+            self._log_handler = None
+        super().closeEvent(event)
 
     def _log(self, level: str, message: str) -> None:
         """ログドックにメッセージを表示する（直接呼び出し用）。"""
@@ -738,5 +816,8 @@ class _QtLogHandler(logging.Handler):
             message = html.escape(self.format(record))
             color = self.COLOR_MAP.get(record.levelno, "#a9b1d6")
             self._bridge.message.emit(color, message)
+        except RuntimeError:
+            # ブリッジ（ウィンドウ）が削除済みの場合はログを捨てる。
+            return
         except Exception:
             self.handleError(record)

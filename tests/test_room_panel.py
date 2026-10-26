@@ -129,6 +129,25 @@ def test_panel_centerline_option_disabled_without_centerline_area():
     assert panel.area_basis == "inner"
 
 
+def test_panel_delete_room_removes_and_emits():
+    _ensure_qt_app()
+    panel = RoomPanel()
+    panel.set_rooms(_rooms())
+    deleted = []
+    panel.room_deleted.connect(deleted.append)
+
+    panel.select_room("ROOM_CANDIDATE_000001")
+    panel._btn_delete.click()
+
+    assert deleted == ["ROOM_CANDIDATE_000001"]
+    assert panel._room_list.count() == 1
+    assert panel._room_list.item(0).text().startswith("1. ")
+    # 削除した部屋は一覧に残らない。
+    assert "和室" not in panel._room_list.item(0).text()
+    # 削除は存在しない部屋には何もしない。
+    assert panel.delete_room("ROOM_CANDIDATE_000001") is False
+
+
 def test_panel_clear_resets():
     _ensure_qt_app()
     panel = RoomPanel()
