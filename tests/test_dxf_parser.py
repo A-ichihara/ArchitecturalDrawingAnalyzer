@@ -380,9 +380,9 @@ def test_dxf_parser_defaults_to_mm_for_unsupported_insunits(tmp_path, insunits):
     assert drawing._meta["units_source"] == "default_mm"
 
 def test_dxf_parser_preserves_insert_block_transform_metadata(tmp_path):
-    """Block references retain their transform instead of being silently flattened."""
+    """Block references expand with their transform applied to the geometry."""
     import ezdxf
-    from core.models.drawing import InsertElement
+    from core.models.drawing import InsertElement, LineElement
 
     doc = ezdxf.new("R2010")
     block = doc.blocks.new(name="DOOR_SYMBOL")
@@ -403,16 +403,43 @@ def test_dxf_parser_preserves_insert_block_transform_metadata(tmp_path):
 
     drawing = DxfParser().parse(str(path))
 
-    inserts = [element for element in drawing.elements if isinstance(element, InsertElement)]
+    # The block line is expanded; the transform is applied to the geometry
+    # instead of being kept only as marker metadata.
+    assert not any(isinstance(e, InsertElement) for e in drawing.elements)
+    lines = [e for e in drawing.elements if isinstance(e, LineElement)]
+    assert len(lines) == 1
+    line = lines[0]
+    assert line.start == pytest.approx([1000, 2000])
+    # End: (900, 0) rotated 30 deg with x-scale 2 -> (1000 + 900*2*cos30, 2000 + 900*2*sin30)
+    assert line.end == pytest.approx([2558.845, 2900.0])
+    # Block entities on layer "0" inherit the insert's layer.
+    assert line.layer == "DOORS"
+    assert line.properties["block_name"] == "DOOR_SYMBOL"
+    assert line.properties["source_insert_id"] == "INSERT_000000"
+
+
+def test_dxf_parser_keeps_marker_for_undefined_block(tmp_path):
+    """References to missing blocks stay visible as markers with their transform."""
+    import ezdxf
+    from core.models.drawing import InsertElement
+
+    doc = ezdxf.new("R2010")
+    doc.modelspace().add_blockref(
+        "MISSING_BLOCK",
+        insert=(500, 600),
+        dxfattribs={"rotation": 45, "xscale": 2, "layer": "DOORS"},
+    )
+    path = tmp_path / "insert_missing_block.dxf"
+    doc.saveas(path)
+
+    drawing = DxfParser().parse(str(path))
+
+    inserts = [e for e in drawing.elements if isinstance(e, InsertElement)]
     assert len(inserts) == 1
-    insert = inserts[0]
-    assert insert.block_name == "DOOR_SYMBOL"
-    assert insert.insert_point == pytest.approx([1000, 2000])
-    assert insert.rotation == pytest.approx(30)
-    assert insert.scale_x == pytest.approx(2)
-    assert insert.scale_y == pytest.approx(3)
-    assert insert.scale_z == pytest.approx(1)
-    assert insert.layer == "DOORS"
+    assert inserts[0].block_name == "MISSING_BLOCK"
+    assert inserts[0].insert_point == pytest.approx([500, 600])
+    assert inserts[0].rotation == pytest.approx(45)
+    assert inserts[0].scale_x == pytest.approx(2)
 
 def test_dxf_parser_keeps_supported_geometry_when_hatch_is_unsupported(tmp_path):
     """Unsupported fill entities are reported without discarding supported lines."""
