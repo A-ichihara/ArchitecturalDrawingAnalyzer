@@ -1,3 +1,4 @@
+import math
 import os
 import logging
 from typing import Dict, Any, List, Optional
@@ -40,6 +41,66 @@ _LINEAR_METRES_PER_UNIT = {
 # これを超える図面は、単位宣言が座標の桁数と食い違っている可能性が高い。
 # 例：mm単位の座標に $INSUNITS=メートルが付いた図面は 1000 m を軽く超える。
 _MAX_PLAUSIBLE_DRAWING_SIZE_M = 1000.0
+
+
+# ブロック展開の深さ上限。自己参照ブロックなどによる無限再帰を防ぐ。
+_MAX_BLOCK_EXPANSION_DEPTH = 10
+
+
+def _compose_transform(outer, inner):
+    """Compose two 2D affine transforms, each (a, b, c, d, tx, ty).
+
+    A point maps as x' = a*x + b*y + tx, y' = c*x + d*y + ty.
+    The result applies `inner` first, then `outer`.
+    """
+    ao, bo, co, do, to_x, to_y = outer
+    ai, bi, ci, di, ti_x, ti_y = inner
+    return (
+        ao * ai + bo * ci,
+        ao * bi + bo * di,
+        co * ai + do * ci,
+        co * bi + do * di,
+        ao * ti_x + bo * ti_y + to_x,
+        co * ti_x + do * ti_y + to_y,
+    )
+
+
+def _transform_point(transform, point):
+    """Apply a 2D affine transform to an (x, y) point."""
+    a, b, c, d, tx, ty = transform
+    x, y = float(point[0]), float(point[1])
+    return [a * x + b * y + tx, c * x + d * y + ty]
+
+
+def _transform_angle(transform, angle_deg):
+    """Transform a direction angle through a 2D affine map.
+
+    Using direction vectors (instead of adding a rotation) keeps the
+    result correct for mirrored transforms as well.
+    """
+    a, b, c, d, _tx, _ty = transform
+    theta = math.radians(float(angle_deg))
+    dx = a * math.cos(theta) + b * math.sin(theta)
+    dy = c * math.cos(theta) + d * math.sin(theta)
+    return math.degrees(math.atan2(dy, dx)) % 360.0
+
+
+def _uniform_scale(transform):
+    """Return the uniform scale factor of a 2D affine map, or None.
+
+    Circles and arcs cannot be represented after a non-uniform scale
+    (they become ellipses), so those entities are skipped in that case.
+    """
+    a, b, c, d, _tx, _ty = transform
+    col_x = math.hypot(a, c)
+    col_y = math.hypot(b, d)
+    if col_x == 0.0 or col_y == 0.0:
+        return None
+    if not math.isclose(col_x, col_y, rel_tol=1e-9, abs_tol=0.0):
+        return None
+    if abs(a * b + c * d) > 1e-9 * col_x * col_y:
+        return None
+    return col_x
 
 
 def _check_unit_plausibility(
@@ -94,9 +155,12 @@ def _check_unit_plausibility(
 class DxfParser(IDrawingParser):
     """
     ezdxfを使用してDXFファイルを解析し、共通 Drawing モデルへ変換するパーサー。
-    
+
     対応エンティティ:
-        LINE, LWPOLYLINE, POLYLINE, ARC, CIRCLE, TEXT, MTEXT
+        LINE, LWPOLYLINE, POLYLINE, ARC, CIRCLE, TEXT, MTEXT, INSERT
+    INSERT（ブロック参照）はブロック定義を展開し、挿入位置・回転・倍率を
+    適用した図形要素に変換する。展開できない参照（未定義ブロック等）は
+    InsertElement として残し、ビューアではマーカー表示される。
     """
 
     def parse(self, file_path: str, **kwargs) -> Drawing:
@@ -170,18 +234,28 @@ class DxfParser(IDrawingParser):
         unsupported_types: Dict[str, int] = {}
         element_counter = 0
         failed_types: Dict[str, int] = {}
+        expanded_inserts = 0
+        insert_markers = 0
 
         for entity in msp:
+            etype = entity.dxftype()
             try:
+                if etype == "INSERT":
+                    expanded = self._expand_insert(doc, entity, element_counter)
+                    if expanded:
+                        elements.extend(expanded)
+                        element_counter += len(expanded)
+                        expanded_inserts += 1
+                        continue
+                    # 展開できない参照はマーカー要素として残す。
+                    insert_markers += 1
                 elem = self._convert_entity(entity, element_counter)
                 if elem is not None:
                     elements.append(elem)
                     element_counter += 1
                 else:
-                    etype = entity.dxftype()
                     unsupported_types[etype] = unsupported_types.get(etype, 0) + 1
             except Exception as e:
-                etype = entity.dxftype()
                 failed_types[etype] = failed_types.get(etype, 0) + 1
                 logger.warning("エンティティ変換スキップ (%s): %s", etype, e)
 
@@ -210,6 +284,8 @@ class DxfParser(IDrawingParser):
             "dxf_insunits": dxf_insunits,
             "units_source": units_source,
             "units_warning": units_warning,
+            "expanded_inserts": expanded_inserts,
+            "insert_markers": insert_markers,
             "unsupported_types": unsupported_types,
             "failed_types": failed_types,
             "layers": {layer.dxf.name: {"color": abs(layer.dxf.color), "is_on": layer.is_on()} for layer in doc.layers},
@@ -404,7 +480,11 @@ class DxfParser(IDrawingParser):
         )
 
     def _convert_insert(self, entity, eid, layer, color) -> InsertElement:
-        """INSERT エンティティ（ブロック参照）を InsertElement へ変換する。"""
+        """INSERT エンティティ（ブロック参照）を InsertElement へ変換する。
+
+        ブロックを展開できない場合のフォールバック用。展開できる参照は
+        _expand_insert が図形要素に変換するため、ここは呼ばれない。
+        """
         block_name = entity.dxf.get("name", "")
         insert_pt = entity.dxf.get("insert", (0.0, 0.0))
         rotation = float(entity.dxf.get("rotation", 0.0))
@@ -423,3 +503,175 @@ class DxfParser(IDrawingParser):
             scale_y=scale_y,
             scale_z=scale_z,
         )
+
+    # -----------------------------------------------------------------------
+    # INSERT（ブロック参照）の展開
+    # -----------------------------------------------------------------------
+
+    def _insert_transform(self, entity):
+        """Return (block_name, transform, layer, color) for an INSERT entity.
+
+        The transform is a 2D affine map (a, b, c, d, tx, ty) combining
+        the insertion point, rotation and x/y scale factors.
+        """
+        block_name = str(entity.dxf.get("name", "") or "")
+        insert_pt = entity.dxf.get("insert", (0.0, 0.0))
+        rotation = float(entity.dxf.get("rotation", 0.0))
+        scale_x = float(entity.dxf.get("xscale", 1.0))
+        scale_y = float(entity.dxf.get("yscale", 1.0))
+        theta = math.radians(rotation)
+        cos_t, sin_t = math.cos(theta), math.sin(theta)
+        transform = (
+            cos_t * scale_x, -sin_t * scale_y,
+            sin_t * scale_x, cos_t * scale_y,
+            float(insert_pt[0]), float(insert_pt[1]),
+        )
+        layer = entity.dxf.get("layer", "0")
+        color = entity.dxf.get("color", None)
+        return block_name, transform, layer, color
+
+    def _expand_insert(self, doc, entity, index: int) -> List[DrawingElement]:
+        """Expand one INSERT into its block contents, transformed to drawing space.
+
+        Returns the expanded elements, or an empty list when the block
+        cannot be expanded (missing block, special layout block, or a
+        degenerate transform). The caller keeps the InsertElement marker
+        in that case.
+        """
+        insert_eid = f"INSERT_{index:06d}"
+        try:
+            block_name, transform, layer, color = self._insert_transform(entity)
+        except (TypeError, ValueError, OverflowError):
+            return []
+        if not block_name or block_name.startswith(("*Model", "*Paper")):
+            return []
+        det = transform[0] * transform[3] - transform[1] * transform[2]
+        if not math.isfinite(det) or det == 0.0:
+            return []
+        if not all(math.isfinite(v) for v in transform):
+            return []
+        try:
+            block = doc.blocks.get(block_name)
+        except Exception:
+            return []
+        counter = [0]
+        try:
+            return self._expand_block_entities(
+                doc, block, transform, insert_eid, block_name, layer, color,
+                depth=0, stack=[block_name], counter=counter,
+            )
+        except Exception as exc:
+            logger.warning("ブロック展開スキップ (%s): %s", block_name, exc)
+            return []
+
+    def _expand_block_entities(
+        self, doc, block, transform, insert_eid, block_name,
+        insert_layer, insert_color, depth, stack, counter,
+    ) -> List[DrawingElement]:
+        """Convert block entities with a transform; nested INSERTs recurse."""
+        if depth > _MAX_BLOCK_EXPANSION_DEPTH:
+            logger.warning("ブロック展開の深さ上限に達しました: %s", block_name)
+            return []
+        elements: List[DrawingElement] = []
+        for entity in block:
+            etype = entity.dxftype()
+            try:
+                if etype == "INSERT":
+                    try:
+                        nested_name, nested_transform, nested_layer, nested_color = (
+                            self._insert_transform(entity)
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    if not nested_name or nested_name in stack:
+                        logger.warning(
+                            "ブロック参照の循環を回避しました: %s", nested_name or "?"
+                        )
+                        continue
+                    try:
+                        nested_block = doc.blocks.get(nested_name)
+                    except Exception:
+                        continue
+                    composed = _compose_transform(transform, nested_transform)
+                    det = composed[0] * composed[3] - composed[1] * composed[2]
+                    if (
+                        not math.isfinite(det)
+                        or det == 0.0
+                        or not all(math.isfinite(v) for v in composed)
+                    ):
+                        continue
+                    # Entities on layer "0" inside a nested block inherit
+                    # the outer insert's layer (DXF rule, applied per level).
+                    effective_layer = (
+                        nested_layer if nested_layer != "0" else insert_layer
+                    )
+                    elements.extend(self._expand_block_entities(
+                        doc, nested_block, composed, insert_eid, nested_name,
+                        effective_layer,
+                        nested_color if nested_color is not None else insert_color,
+                        depth + 1, stack + [nested_name], counter,
+                    ))
+                    continue
+                elem = self._convert_entity(entity, counter[0])
+                if elem is None:
+                    continue
+                transformed = self._apply_transform(elem, transform)
+                if transformed is None:
+                    logger.warning(
+                        "ブロック内要素をスキップ (非均一倍率で表現不可: %s)", etype
+                    )
+                    continue
+            except Exception as exc:
+                logger.warning("ブロック内要素の変換スキップ (%s): %s", etype, exc)
+                continue
+            counter[0] += 1
+            transformed.element_id = f"{insert_eid}__{counter[0]:03d}"
+            if transformed.layer == "0":
+                transformed.layer = insert_layer
+            if transformed.color == 0 and insert_color is not None:
+                transformed.color = insert_color
+            transformed.properties["block_name"] = block_name
+            transformed.properties["source_insert_id"] = insert_eid
+            elements.append(transformed)
+        return elements
+
+    def _apply_transform(self, elem, transform) -> Optional[DrawingElement]:
+        """Apply a 2D affine transform to a converted element in place.
+
+        Returns None for geometry that cannot be represented after the
+        transform (circles/arcs under non-uniform scale, which become
+        ellipses). Polyline bulge values are kept unchanged: exact under
+        rotation and uniform scale, approximate under non-uniform scale.
+        """
+        if isinstance(elem, LineElement):
+            elem.start = _transform_point(transform, elem.start)
+            elem.end = _transform_point(transform, elem.end)
+        elif isinstance(elem, PolylineElement):
+            elem.points = [
+                _transform_point(transform, pt) for pt in elem.points
+            ]
+        elif isinstance(elem, ArcElement):
+            scale = _uniform_scale(transform)
+            if scale is None:
+                return None
+            elem.center = _transform_point(transform, elem.center)
+            elem.radius = float(elem.radius) * scale
+            elem.start_angle = _transform_angle(transform, elem.start_angle)
+            elem.end_angle = _transform_angle(transform, elem.end_angle)
+        elif isinstance(elem, CircleElement):
+            scale = _uniform_scale(transform)
+            if scale is None:
+                return None
+            elem.center = _transform_point(transform, elem.center)
+            elem.radius = float(elem.radius) * scale
+        elif isinstance(elem, TextElement):
+            det = transform[0] * transform[3] - transform[1] * transform[2]
+            elem.insertion_point = _transform_point(
+                transform, elem.insertion_point
+            )
+            elem.height = float(elem.height) * math.sqrt(abs(det))
+            elem.rotation = _transform_angle(transform, elem.rotation)
+        elif isinstance(elem, InsertElement):
+            # Nested inserts are expanded by the caller, never transformed here.
+            return None
+        return elem
