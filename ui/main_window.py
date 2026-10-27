@@ -708,6 +708,11 @@ class MainWindow(QMainWindow):
         """GUIをブロックせずに暫定的な部屋候補を検出する。"""
         if self._drawing is None or self._room_thread is not None:
             return
+        if self._load_thread is not None:
+            # 読み込み中の検出は古い図面を対象にし、読み込み完了時に
+            # 結果が消えてしまうため、読み込みが終わるまで待つ。
+            self._log("warn", "図面の読み込み中のため、部屋候補の検出を後でもう一度行ってください。")
+            return
         self._act_detect_rooms.setEnabled(False)
         self._act_open.setEnabled(False)
         self._label_status.setText("状態：部屋候補を解析中...")
