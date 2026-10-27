@@ -23,7 +23,11 @@ def _wait_for_load(window, timeout_s=10.0):
     """読み込みスレッドの終了を待つ。"""
     deadline = time.monotonic() + timeout_s
     while window._load_thread is not None and time.monotonic() < deadline:
-        QTest.qWait(50)
+        # QTest.qWait でのポーリングはワーカーの GIL を奪い、Windows CI で
+        # 読み込みスレッドが進まなくなる（止まる・落ちる）ため、sleep で
+        # GIL を譲りつつイベント処理で完了シグナルを受け取る。
+        time.sleep(0.1)
+        QApplication.processEvents()
     assert window._load_thread is None, "図面の読み込みが時間内に終わりませんでした"
     assert window._drawing is not None
 
@@ -32,7 +36,9 @@ def _wait_for_detection(window, timeout_s=10.0):
     """部屋検出スレッドの終了を待つ。"""
     deadline = time.monotonic() + timeout_s
     while window._room_thread is not None and time.monotonic() < deadline:
-        QTest.qWait(50)
+        # QTest.qWait でのポーリングはワーカーの GIL を奪うため sleep で待つ。
+        time.sleep(0.1)
+        QApplication.processEvents()
     assert window._room_thread is None, "部屋検出が時間内に終わりませんでした"
 
 

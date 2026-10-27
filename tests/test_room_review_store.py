@@ -106,7 +106,7 @@ def test_main_window_saves_and_restores_reviews(tmp_path):
     window._on_load_finished(dxf_path, drawing)
     polyline = detect_closed_polyline_room_candidates(drawing)
     linework = detect_linework_room_candidates(drawing)
-    window._on_room_detection_finished(polyline, linework)
+    window._on_room_detection_finished(polyline, linework, [], [])
     assert len(window._rooms) == 2
 
     # 1 件目の名前を編集し、2 件目を却下する。
@@ -132,7 +132,7 @@ def test_main_window_saves_and_restores_reviews(tmp_path):
         ),
     )
     assert fresh[0].room_name != "会議室"
-    window._on_room_detection_finished(polyline, linework)
+    window._on_room_detection_finished(polyline, linework, [], [])
     restored = {r.room_id: r for r in window._rooms}
     assert restored[first.room_id].room_name == "会議室"
     assert restored[second.room_id].review_status == REVIEW_STATUS_REJECTED

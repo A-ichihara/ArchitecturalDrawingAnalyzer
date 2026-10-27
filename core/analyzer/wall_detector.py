@@ -14,8 +14,9 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 from shapely.geometry import LineString, Point, Polygon
+from shapely.strtree import STRtree
 
-from core.analyzer.room_detector import _AREA_TO_M2
+from core.analyzer.units import _AREA_TO_M2
 from core.models.drawing import Drawing, LineElement, PolylineElement
 from core.models.room import Room
 
@@ -140,16 +141,81 @@ def _centerline_over_overlap(a: _Segment, b: _Segment, lo: float, hi: float) -> 
     return points
 
 
+# 総当たりで扱う組数の上限。グリッドが非効率な場合に総当たりへ
+# 切り替えるのは、この組数以下のときに限る。
+_MAX_DIRECT_PAIRS = 130_000
+
+
+def _grid_cell_count(
+    segments: List[_Segment], max_distance: float, cell: float, limit: int
+) -> int:
+    """グリッドへ登録するセル数の見積もり。limit を超えた時点で打ち切る。"""
+    total = 0
+    for seg in segments:
+        min_x = min(seg.p1[0], seg.p2[0]) - max_distance
+        max_x = max(seg.p1[0], seg.p2[0]) + max_distance
+        min_y = min(seg.p1[1], seg.p2[1]) - max_distance
+        max_y = max(seg.p1[1], seg.p2[1]) + max_distance
+        nx = math.floor(max_x / cell) - math.floor(min_x / cell) + 1
+        ny = math.floor(max_y / cell) - math.floor(min_y / cell) + 1
+        total += nx * ny
+        if total > limit:
+            break
+    return total
+
+
 def _candidate_pairs(segments: List[_Segment], max_distance: float) -> List[Tuple[int, int]]:
     """最大距離以内にあり得る線分の組を空間グリッドで絞り込む。
 
     各線分を、最大距離だけ広げた外接矩形が触れるセルへ登録し、
     同じセルに入った組だけを返す。線分同士の距離が最大距離を
     超える組は決して同じセルに入らない。
+
+    グリッドの登録数は線分の長さをセルで割った値に比例するため、
+    セル（最大壁厚を図面単位へ換算した値）が線分に比べて極端に
+    小さい場合（mm の数値を m 単位と誤認した場合など）は登録数が
+    爆発し、総当たりよりはるかに高くつく。その場合は線分の組数が
+    少なければ外接矩形による総当たりへ切り替え、多ければ STRtree
+    で最大距離以内の組を直接求める。呼び出し側が正確な距離で
+    絞り込むため、返す組が増えても最終結果は変わらない。
     """
     if not segments or max_distance <= 0:
         return []
+    count = len(segments)
+    pair_count = count * (count - 1) // 2
     cell = max_distance
+    total_cells = _grid_cell_count(segments, max_distance, cell, pair_count)
+    if total_cells > pair_count:
+        if pair_count <= _MAX_DIRECT_PAIRS:
+            # グリッドより総当たりが安い場合：外接矩形（最大距離だけ
+            # 広げたもの）の重なりで候補を絞る。距離が最大距離以内の
+            # 組は必ず外接矩形が重なるため、候補の漏れはない。
+            pairs: List[Tuple[int, int]] = []
+            for i in range(count):
+                a = segments[i]
+                a_min_x = min(a.p1[0], a.p2[0]) - max_distance
+                a_max_x = max(a.p1[0], a.p2[0]) + max_distance
+                a_min_y = min(a.p1[1], a.p2[1]) - max_distance
+                a_max_y = max(a.p1[1], a.p2[1]) + max_distance
+                for j in range(i + 1, count):
+                    b = segments[j]
+                    if (
+                        min(b.p1[0], b.p2[0]) > a_max_x
+                        or max(b.p1[0], b.p2[0]) < a_min_x
+                        or min(b.p1[1], b.p2[1]) > a_max_y
+                        or max(b.p1[1], b.p2[1]) < a_min_y
+                    ):
+                        continue
+                    pairs.append((i, j))
+            return pairs
+        # 線分が多くて総当たりできない場合：STRtree で最大距離以内の
+        # 組を直接求める。セルを大きくしてグリッドに収めようとすると
+        # 1 セルに入る線分数が増え、セル内の組の列挙が爆発してしまう
+        # ため、セル拡大は使わない。
+        lines = [LineString([seg.p1, seg.p2]) for seg in segments]
+        tree = STRtree(lines)
+        left, right = tree.query(lines, predicate="dwithin", distance=max_distance)
+        return sorted({(int(i), int(j)) for i, j in zip(left, right) if i < j})
     grid: dict[Tuple[int, int], List[int]] = {}
     for index, seg in enumerate(segments):
         min_x = min(seg.p1[0], seg.p2[0]) - max_distance
