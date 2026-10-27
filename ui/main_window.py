@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QToolBar, QStatusBar, QFileDialog, QMessageBox,
     QLabel, QSizePolicy, QDockWidget, QTextEdit, QPushButton,
-    QTabWidget, QComboBox
+    QTabWidget, QComboBox, QDialog
 )
 from PySide6.QtCore import Qt, QThread, Signal, QObject, Slot
 from PySide6.QtGui import QAction, QIcon, QKeySequence, QColor
@@ -22,9 +22,21 @@ from core.drawing_viewer.scene import DrawingScene, DrawingLayer
 from core.drawing_viewer.view import DrawingView
 from core.drawing_viewer.renderers import DxfRenderer
 from core.drawing_viewer.room_overlay import ROOM_ITEM_ROLE, RoomOverlayRenderer
+from core.drawing_viewer.dimension_overlay import (
+    DIMENSION_ITEM_ROLE,
+    DimensionOverlayRenderer,
+)
+from core.analyzer.dimension_check import (
+    DimensionCheck,
+    calibrate_scale_from_dimension,
+    check_dimensions,
+    rescale_drawing,
+)
 from core.export.room_export import export_rooms
 from core.rooms.review_store import apply_reviews, load_reviews, save_reviews
 from core.parser.dxf_parser import DxfParser
+from core.parser.pdf_parser import PdfParser
+from ui.scale_dialog import PdfScaleDialog, SCALE_DIALOG_CANCELLED
 from core.models.drawing import Drawing, DrawingElement
 from core.models.room import Room
 from core.analyzer.drawing_analyzer import DrawingAnalyzer
@@ -49,22 +61,34 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# バックグラウンドDXF読み込みワーカー
+# バックグラウンド図面読み込みワーカー
 # ---------------------------------------------------------------------------
 
-class DxfLoadWorker(QObject):
-    """DXFファイルをバックグラウンドスレッドで読み込むワーカー。"""
+class DrawingLoadWorker(QObject):
+    """図面ファイル（DXF / PDF）をバックグラウンドスレッドで読み込むワーカー。
+
+    拡張子でパーサーを切り替える。PDF の場合は mm/pt 換算率を受け取り、
+    未指定（None）の場合は 1pt=1mm として読み込む。
+    """
     finished = Signal(str, object)  # ファイルパス、Drawing オブジェクト
     error = Signal(str, str)       # ファイルパス、エラーメッセージ
 
-    def __init__(self, file_path: str):
+    def __init__(self, file_path: str, mm_per_pt: Optional[float] = None):
         super().__init__()
         self._file_path = file_path
+        self._mm_per_pt = mm_per_pt
 
     def run(self) -> None:
         try:
-            parser = DxfParser()
-            drawing = parser.parse(self._file_path)
+            ext = os.path.splitext(self._file_path)[1].lower()
+            if ext == ".pdf":
+                drawing = PdfParser().parse(
+                    self._file_path, scale_mm_per_pt=self._mm_per_pt
+                )
+            elif ext == ".dxf":
+                drawing = DxfParser().parse(self._file_path)
+            else:
+                raise ValueError(f"対応していない図面形式です: {ext}")
             self.finished.emit(self._file_path, drawing)
         except Exception as e:
             self.error.emit(self._file_path, str(e))
@@ -121,8 +145,10 @@ class MainWindow(QMainWindow):
         self._area_basis: str = "inner"
         self._reviewed_rooms: set[str] = set()  # ユーザーが修正した部屋 ID
         self._room_overlay = RoomOverlayRenderer()
+        self._dimension_checks: list[DimensionCheck] = []
+        self._dimension_overlay = DimensionOverlayRenderer()
         self._load_thread: Optional[QThread] = None
-        self._worker: Optional[DxfLoadWorker] = None
+        self._worker: Optional[DrawingLoadWorker] = None
         self._room_thread: Optional[QThread] = None
         self._room_worker: Optional[RoomDetectionWorker] = None
 
@@ -173,11 +199,11 @@ class MainWindow(QMainWindow):
         toolbar.setStyleSheet("QToolBar { spacing: 6px; padding: 4px; }")
         self.addToolBar(toolbar)
 
-        # DXFを開く
-        self._act_open = QAction("📂 DXFを開く", self)
+        # 図面を開く（DXF / PDF）
+        self._act_open = QAction("📂 図面を開く", self)
         self._act_open.setShortcut(QKeySequence.StandardKey.Open)
-        self._act_open.setStatusTip("DXFファイルを開いて図面を表示します")
-        self._act_open.triggered.connect(self._open_dxf)
+        self._act_open.setStatusTip("DXF / PDF ファイルを開いて図面を表示します")
+        self._act_open.triggered.connect(self._open_drawing)
         toolbar.addAction(self._act_open)
 
         self._act_detect_rooms = QAction("部屋候補を検出", self)
@@ -191,6 +217,21 @@ class MainWindow(QMainWindow):
         self._act_export_rooms.setStatusTip("確認した部屋一覧を CSV / Excel で保存します")
         self._act_export_rooms.triggered.connect(self._export_rooms)
         toolbar.addAction(self._act_export_rooms)
+
+        # 寸法に合わせて倍率を調整する（PDF のみ）。
+        self._act_calibrate = QAction("📐 寸法に合わせて倍率を調整", self)
+        self._act_calibrate.setEnabled(False)
+        self._act_calibrate.setStatusTip("不一致の寸法から換算率を計算し直し、図面全体を拡大・縮小します（PDFのみ）")
+        self._act_calibrate.triggered.connect(self._calibrate_scale)
+        toolbar.addAction(self._act_calibrate)
+
+        # 寸法照合の印の表示／非表示。
+        self._act_toggle_dimensions = QAction("📐 寸法照合を表示", self)
+        self._act_toggle_dimensions.setCheckable(True)
+        self._act_toggle_dimensions.setChecked(True)
+        self._act_toggle_dimensions.setStatusTip("寸法照合の印の表示／非表示を切り替えます")
+        self._act_toggle_dimensions.toggled.connect(self._on_toggle_dimension_overlay)
+        toolbar.addAction(self._act_toggle_dimensions)
 
         toolbar.addSeparator()
 
@@ -359,30 +400,60 @@ class MainWindow(QMainWindow):
     # スロット
     # ------------------------------------------------------------------
 
-    def _open_dxf(self) -> None:
-        """DXFファイル選択ダイアログを開く。"""
+    def _open_drawing(self) -> None:
+        """図面ファイル（DXF / PDF）選択ダイアログを開く。"""
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "DXFファイルを開く",
+            "図面ファイルを開く",
             "",
-            "DXF Files (*.dxf *.DXF);;All Files (*)",
+            "図面ファイル (*.dxf *.DXF *.pdf *.PDF);;DXF ファイル (*.dxf *.DXF);;PDF ファイル (*.pdf *.PDF);;すべてのファイル (*)",
         )
         if not file_path:
             return
 
-        self._load_dxf(file_path)
+        mm_per_pt: Optional[float] = None
+        if file_path.lower().endswith(".pdf"):
+            result = self._ask_pdf_scale(file_path)
+            if result is SCALE_DIALOG_CANCELLED:
+                self._log("info", "PDF の読み込みを中止しました。")
+                return
+            mm_per_pt = result
+
+        self._load_drawing(file_path, mm_per_pt=mm_per_pt)
+
+    def _ask_pdf_scale(self, file_path: str) -> object:
+        """PDF を開くときに mm/pt 換算率を尋ねる。
+
+        空欄のまま開くこともできる。その場合は None を返す。
+        ダイアログでキャンセルした場合は SCALE_DIALOG_CANCELLED を返す。
+        """
+        dialog = PdfScaleDialog(self, file_name=os.path.basename(file_path))
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return SCALE_DIALOG_CANCELLED
+        return dialog.scale_mm_per_pt()
 
     def _load_dxf(self, file_path: str) -> None:
-        """DXFファイルをバックグラウンドで読み込む。
+        """後方互換のための別名（_load_drawing と同じ）。"""
+        self._load_drawing(file_path)
 
-        同時に複数の読み込みスレッドを起動しないようにし、
-        完了後にスレッドとワーカーの参照を安全に解放する。
+    def _load_drawing(self, file_path: str, mm_per_pt: Optional[float] = None) -> None:
+        """図面ファイルを読み込む。
+
+        DXF はバックグラウンドスレッドで読み込む。同時に複数の
+        読み込みスレッドを起動しないようにし、完了後にスレッドと
+        ワーカーの参照を安全に解放する。
+        PDF は GUI スレッドで同期的に読み込む。PyMuPDF をワーカー
+        スレッドで使うと、テストで稀に落ちることがあるため。
+        mm_per_pt は PDF の場合の 1pt あたりの mm 数（未指定は None）。
         """
+        if file_path.lower().endswith(".pdf"):
+            self._load_pdf_sync(file_path, mm_per_pt)
+            return
         if self._room_thread is not None and self._room_thread.isRunning():
-            self._log("warn", "部屋候補の解析中は別のDXFを開けません。")
+            self._log("warn", "部屋候補の解析中は別の図面を開けません。")
             return
         if self._load_thread is not None and self._load_thread.isRunning():
-            self._log("warn", "別のDXFを読み込み中のため、新しい読み込みを開始しませんでした。")
+            self._log("warn", "別の図面を読み込み中のため、新しい読み込みを開始しませんでした。")
             return
 
         self._act_open.setEnabled(False)
@@ -390,11 +461,11 @@ class MainWindow(QMainWindow):
         filename = os.path.basename(file_path)
         self._label_file.setText(f"ファイル：{filename}")
         self._label_status.setText("状態：読み込み中...")
-        self._log("info", f"DXF読み込み開始: {file_path}")
+        self._log("info", f"図面読み込み開始: {file_path}")
 
         # バックグラウンドスレッドで読み込み
         self._load_thread = QThread(self)
-        self._worker = DxfLoadWorker(file_path)
+        self._worker = DrawingLoadWorker(file_path, mm_per_pt=mm_per_pt)
         self._worker.moveToThread(self._load_thread)
         self._load_thread.started.connect(self._worker.run)
         self._worker.finished.connect(self._on_load_finished)
@@ -406,6 +477,31 @@ class MainWindow(QMainWindow):
         self._load_thread.finished.connect(self._on_load_thread_finished)
         self._load_thread.finished.connect(self._load_thread.deleteLater)
         self._load_thread.start()
+
+    def _load_pdf_sync(self, file_path: str, mm_per_pt: Optional[float]) -> None:
+        """PDF を GUI スレッドで同期的に読み込む。
+
+        読み込み中は部屋候補の解析も行わない。失敗時は
+        _on_load_error 経由で通知する。
+        """
+        if self._room_thread is not None and self._room_thread.isRunning():
+            self._log("warn", "部屋候補の解析中は別の図面を開けません。")
+            return
+        if self._load_thread is not None and self._load_thread.isRunning():
+            self._log("warn", "別の図面を読み込み中のため、新しい読み込みを開始しませんでした。")
+            return
+
+        filename = os.path.basename(file_path)
+        self._label_file.setText(f"ファイル：{filename}")
+        self._label_status.setText("状態：読み込み中...")
+        self._log("info", f"図面読み込み開始: {file_path}")
+        try:
+            drawing = PdfParser().parse(file_path, scale_mm_per_pt=mm_per_pt)
+        except Exception as exc:
+            logger.exception("PDF の読み込みに失敗しました")
+            self._on_load_error(file_path, str(exc))
+            return
+        self._on_load_finished(file_path, drawing)
 
     @Slot()
     def _on_load_thread_finished(self) -> None:
@@ -431,6 +527,8 @@ class MainWindow(QMainWindow):
         self._deleted_room_ids = set()
         self._area_basis = "inner"
         self._room_overlay.clear(self._scene)
+        self._dimension_checks = []
+        self._dimension_overlay.clear(self._scene)
         self._room_panel.clear()
         self._room_panel.set_area_basis("inner")
         self._act_export_rooms.setEnabled(False)
@@ -466,19 +564,131 @@ class MainWindow(QMainWindow):
         self._label_elements.setText(f"要素数：{stats.total_elements}")
 
         meta = getattr(drawing, "_meta", {})
-        dxf_ver = meta.get("dxf_version", "不明")
-        unsupported = meta.get("unsupported_types", {})
-
-        self._log("info", f"読み込み完了: {stats.total_elements} 要素 / レイヤー数: {stats.layer_count} / DXFバージョン: {dxf_ver}")
+        if drawing.file_type == "pdf":
+            self._log("info", f"読み込み完了: {stats.total_elements} 要素 / レイヤー数: {stats.layer_count} / PDF（{meta.get('pdf_page_count', 1)} ページ中 1 ページ目）")
+            self._run_dimension_check()
+            self._rerender_dimension_overlay()
+            self._update_calibrate_action()
+            scanned_warning = meta.get("scanned_pdf_warning")
+            if scanned_warning:
+                self._log("warn", scanned_warning)
+            text_warning = meta.get("text_garbled_warning")
+            if text_warning:
+                self._log("warn", text_warning)
+        else:
+            dxf_ver = meta.get("dxf_version", "不明")
+            unsupported = meta.get("unsupported_types", {})
+            self._log("info", f"読み込み完了: {stats.total_elements} 要素 / レイヤー数: {stats.layer_count} / DXFバージョン: {dxf_ver}")
+            self._act_calibrate.setEnabled(False)
+            if unsupported:
+                self._log("warn", f"未対応エンティティ（スキップ）: {unsupported}")
         self._log("info", f"要素内訳: {stats.by_type}")
-        if unsupported:
-            self._log("warn", f"未対応エンティティ（スキップ）: {unsupported}")
         units_warning = meta.get("units_warning")
         if units_warning:
             self._log("warn", units_warning)
 
+    def _run_dimension_check(self) -> list:
+        """現在の図面について寸法照合を実行し、結果を保持してログに出す。"""
+        if self._drawing is None:
+            self._dimension_checks = []
+            return []
+        try:
+            checks = check_dimensions(self._drawing)
+        except Exception as exc:
+            logger.exception("寸法照合に失敗しました")
+            self._log("warn", f"寸法照合に失敗しました: {exc}")
+            self._dimension_checks = []
+            return []
+        self._dimension_checks = checks
+        matched = sum(1 for c in checks if c.status == "matched")
+        mismatched = sum(1 for c in checks if c.status == "mismatched")
+        to_confirm = sum(1 for c in checks if c.status == "to_confirm")
+        not_determinable = sum(1 for c in checks if c.status == "not_determinable")
+        self._log(
+            "info",
+            f"寸法照合: {len(checks)} 件（一致 {matched}、不一致 {mismatched}、"
+            f"要確認 {to_confirm}、判定不能 {not_determinable}）",
+        )
+        return checks
+
+    def _rerender_dimension_overlay(self) -> None:
+        """現在の寸法照合の結果でオーバーレイを描き直す。"""
+        self._dimension_overlay.clear(self._scene)
+        if self._drawing is not None and self._dimension_checks:
+            self._dimension_overlay.render_checks(
+                self._dimension_checks, self._drawing, self._scene
+            )
+        self._dimension_overlay.set_visible(self._act_toggle_dimensions.isChecked())
+
+    def _update_calibrate_action(self) -> None:
+        """倍率調整ボタンの有効／無効を現在の照合結果に合わせる。"""
+        enabled = (
+            self._drawing is not None
+            and self._drawing.file_type == "pdf"
+            and any(
+                c.status == "mismatched" and c.measured_length_pt
+                for c in self._dimension_checks
+            )
+        )
+        self._act_calibrate.setEnabled(bool(enabled))
+
+    def _on_toggle_dimension_overlay(self, checked: bool) -> None:
+        """寸法照合の印の表示／非表示を切り替える。"""
+        self._dimension_overlay.set_visible(checked)
+
+    def _calibrate_scale(self) -> None:
+        """不一致の寸法から換算率を計算し直し、図面全体を拡大・縮小する。
+
+        倍率調整はこのボタンの操作でのみ行い、自動では行わない。
+        調整後は図面を描き直し、寸法照合と部屋検出をやり直す。
+        """
+        if self._drawing is None or self._drawing.file_type != "pdf":
+            QMessageBox.information(self, "倍率調整", "倍率調整は PDF の図面でのみ行えます。")
+            return
+        candidates = [
+            c for c in self._dimension_checks
+            if c.status == "mismatched" and c.measured_length_pt
+        ]
+        if not candidates:
+            QMessageBox.information(
+                self,
+                "倍率調整",
+                "調整対象の寸法がありません。\n"
+                "（不一致の寸法がないか、測定対象の線が見つかっていません）",
+            )
+            self._log("info", "倍率調整：調整対象の寸法がないため、何もしませんでした。")
+            return
+        check = max(candidates, key=lambda c: c.confidence)
+        meta = getattr(self._drawing, "_meta", {})
+        current_mm_per_pt = float(meta.get("mm_per_pt") or self._drawing.scale or 1.0)
+        try:
+            new_mm_per_pt = calibrate_scale_from_dimension(check, current_mm_per_pt)
+            factor = rescale_drawing(self._drawing, new_mm_per_pt, source_check=check)
+        except ValueError as exc:
+            QMessageBox.warning(self, "倍率調整", f"換算率を計算できませんでした。\n{exc}")
+            return
+        self._log(
+            "info",
+            f"倍率調整：{check.dimension_id}（寸法 {check.value_mm:.0f}mm／実測 {check.measured_mm:.0f}mm）を使い、"
+            f"換算率を {current_mm_per_pt:.6f} → {new_mm_per_pt:.6f} mm/pt（倍率 {factor:.6f}）に変更しました。",
+        )
+        # 図面を描き直し、寸法照合と部屋検出をやり直す。
+        self._renderer.render(self._drawing, self._scene)
+        self._run_dimension_check()
+        self._rerender_dimension_overlay()
+        self._update_calibrate_action()
+        self._fit_view()
+        self._detect_room_candidates()
+        QMessageBox.information(
+            self,
+            "倍率調整",
+            f"換算率を {current_mm_per_pt:.4f} → {new_mm_per_pt:.4f} mm/pt に変更しました。\n"
+            f"（{check.dimension_id}：寸法 {check.value_mm:.0f}mm／実測 {check.measured_mm:.0f}mm）\n"
+            f"寸法照合と部屋検出をやり直しています。",
+        )
+
     def _on_load_error(self, file_path: str, message: str) -> None:
-        """DXF読み込みエラー時の処理。"""
+        """図面読み込みエラー時の処理。"""
         self._label_status.setText("状態：読み込みエラー")
         # 読み込みに失敗したファイルを、現在表示中の図面として表示しない。
         current_name = os.path.basename(self._current_file) if self._current_file else "（未選択）"
@@ -488,9 +698,9 @@ class MainWindow(QMainWindow):
 
         QMessageBox.warning(
             self,
-            "DXF読み込みエラー",
-            f"DXFファイルを読み込めませんでした。\n\n"
-            f"原因：\nこのDXF形式は現在対応していない可能性があります。\n\n"
+            "図面読み込みエラー",
+            f"図面ファイルを読み込めませんでした。\n\n"
+            f"原因：\nこの図面形式は現在対応していない可能性があります。\n\n"
             f"詳細：\n{message}",
         )
 
@@ -616,6 +826,16 @@ class MainWindow(QMainWindow):
             return
 
         item = selected_items[0]
+        dimension_id = item.data(DIMENSION_ITEM_ROLE)
+        if dimension_id:
+            check = next(
+                (c for c in self._dimension_checks if c.dimension_id == dimension_id),
+                None,
+            )
+            if check is not None:
+                self._property_panel.show_dimension_check(check)
+                self._right_tabs.setCurrentWidget(self._property_panel)
+                return
         room_id = item.data(ROOM_ITEM_ROLE)
         if room_id:
             room = next((r for r in self._rooms if r.room_id == room_id), None)

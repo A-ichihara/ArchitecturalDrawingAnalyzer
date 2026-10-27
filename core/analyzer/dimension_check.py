@@ -46,6 +46,15 @@ _FULLWIDTH_DIGITS = str.maketrans("０１２３４５６７８９．，", "01234
 _DIMENSION_VALUE_RE = re.compile(r"^\d+(\.\d+)?$")
 
 
+# 照合状態の日本語表示。
+STATUS_LABELS = {
+    "matched": "一致",
+    "mismatched": "不一致",
+    "to_confirm": "要確認",
+    "not_determinable": "判定不能",
+}
+
+
 @dataclass
 class _Segment:
     """Drawing 内の直線区間（線要素・ポリラインの辺を共通化したもの）。"""

@@ -15,6 +15,7 @@ from core.models.drawing import (
     DrawingElement, LineElement, PolylineElement, ArcElement,
     CircleElement, TextElement, InsertElement
 )
+from core.analyzer.dimension_check import STATUS_LABELS, DimensionCheck
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,7 @@ class PropertyPanel(QWidget):
             self.clear()
             return
 
+        self.title_label.setText("プロパティ")
         self.table.setRowCount(0)
 
         # 1. 共通プロパティ
@@ -113,6 +115,32 @@ class PropertyPanel(QWidget):
             self._add_row("挿入点", f"({element.insert_point[0]:.2f}, {element.insert_point[1]:.2f})")
             self._add_row("回転角", f"{element.rotation:.2f}°")
             self._add_row("スケール (X, Y, Z)", f"({element.scale_x:.2f}, {element.scale_y:.2f}, {element.scale_z:.2f})")
+
+    def show_dimension_check(self, check: DimensionCheck) -> None:
+        """寸法照合の結果をプロパティパネルに表示する。
+
+        曖昧な寸法（要確認）はその旨を表示し、確定値としては扱わない。
+        """
+        self.title_label.setText("寸法照合")
+        self.table.setRowCount(0)
+        self._add_row("寸法ID", check.dimension_id)
+        self._add_row("寸法値", f"{check.value_mm:.2f} mm（{check.dimension_text}）")
+        if check.measured_mm is not None:
+            self._add_row("実測長", f"{check.measured_mm:.2f} mm")
+        else:
+            self._add_row("実測長", "―")
+        if check.difference_mm is not None:
+            self._add_row("差分", f"{check.difference_mm:+.2f} mm")
+        else:
+            self._add_row("差分", "―")
+        if check.tolerance_mm is not None:
+            self._add_row("許容誤差", f"±{check.tolerance_mm:.2f} mm")
+        else:
+            self._add_row("許容誤差", "―")
+        self._add_row("状態", STATUS_LABELS.get(check.status, check.status))
+        self._add_row("確信度", f"{check.confidence:.2f}")
+        if check.reason:
+            self._add_row("理由", check.reason)
 
     def _add_row(self, key: str, value: str) -> None:
         row = self.table.rowCount()
