@@ -15,7 +15,7 @@ from typing import List, Optional, Tuple
 
 from shapely.geometry import LineString, Point, Polygon
 
-from core.analyzer.room_detector import _AREA_TO_M2
+from core.analyzer.units import _AREA_TO_M2
 from core.models.drawing import Drawing, LineElement, PolylineElement
 from core.models.room import Room
 

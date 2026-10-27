@@ -156,7 +156,7 @@ def test_main_window_detection_renders_overlay_and_enables_export():
     window = MainWindow()
     assert not window._act_export_rooms.isEnabled()
 
-    window._on_room_detection_finished(rooms, [])
+    window._on_room_detection_finished(rooms, [], [], [])
     assert window._rooms == rooms
     assert len(_analysis_items(window._scene)) == 1
     assert window._act_export_rooms.isEnabled()

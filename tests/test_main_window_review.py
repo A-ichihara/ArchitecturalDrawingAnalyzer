@@ -43,6 +43,8 @@ def _detect(window):
     window._on_room_detection_finished(
         detect_closed_polyline_room_candidates(drawing),
         detect_linework_room_candidates(drawing),
+        [],
+        [],
     )
 
 
