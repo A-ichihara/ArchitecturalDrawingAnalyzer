@@ -17,25 +17,13 @@ from shapely.ops import polygonize, unary_union
 
 from core.models.drawing import Drawing, LineElement, PolylineElement, TextElement
 from core.models.room import Room
+from core.analyzer.units import _AREA_TO_M2
+from core.analyzer.wall_detector import collect_wall_segments, detect_wall_pairs
 
 
-_AREA_TO_M2 = {
-    "mm": 1e-6,
-    "millimeter": 1e-6,
-    "millimeters": 1e-6,
-    "cm": 1e-4,
-    "centimeter": 1e-4,
-    "centimeters": 1e-4,
-    "m": 1.0,
-    "meter": 1.0,
-    "meters": 1.0,
-    "in": 0.0254**2,
-    "inch": 0.0254**2,
-    "inches": 0.0254**2,
-    "ft": 0.3048**2,
-    "foot": 0.3048**2,
-    "feet": 0.3048**2,
-}
+# 部屋名の関連付けで許容する、境界からのずれ (mm)。挿入点が部屋のすぐ外に
+# ある文字を拾うためのもので、壁厚 (100-200mm) を大きく超えない値にする。
+_NAME_NEAR_TOLERANCE_MM = 100.0
 
 
 def detect_closed_polyline_room_candidates(
@@ -366,14 +354,129 @@ def deduplicate_room_candidates(polyline_rooms: List[Room], linework_rooms: List
 
 
 
+def detect_wall_pair_room_candidates(
+    drawing: Drawing,
+    wall_pairs=None,
+    min_area_m2: float = 1.0,
+) -> List[Room]:
+    """壁ペアに参加する線分だけから部屋候補を検出する。
+
+    実図面では同じ壁が仕上・断熱・躯体など複数の画層に分かれて描かれ、
+    全線分で検出すると壁の内法面で小さな部屋になったり、共用部のような
+    大きな部屋が断片化したりする。壁ペア (平行する2本の線分) に参加する
+    線分だけに絞ると、壁面に沿った本来の部屋境界が得られやすい。
+    壁ペアに参加しない単線の壁は拾えないため、この関数の結果は
+    全線分の検出結果と組み合わせて使う (merge_room_candidates)。
+    返される部屋の room_id は ROOM_WALLPAIR_ から始まり、candidate_type は
+    "wall_pair_linework" になる。
+    """
+    if wall_pairs is None:
+        wall_pairs = detect_wall_pairs(drawing)
+    if not wall_pairs:
+        return []
+    pair_source_ids = set()
+    for pair in wall_pairs:
+        pair_source_ids.update(pair.source_ids)
+    wall_lines = []
+    for segment in collect_wall_segments(drawing):
+        if segment.source_id not in pair_source_ids:
+            continue
+        wall_lines.append(
+            LineElement(
+                element_id=f"WALLPAIR_{len(wall_lines):05d}",
+                element_type="LINE",
+                layer="0",
+                start=[float(segment.p1[0]), float(segment.p1[1])],
+                end=[float(segment.p2[0]), float(segment.p2[1])],
+            )
+        )
+    if not wall_lines:
+        return []
+    sub_drawing = replace(drawing, elements=wall_lines)
+    rooms = detect_linework_room_candidates(sub_drawing, min_area_m2=min_area_m2)
+    renamed = []
+    for index, room in enumerate(rooms):
+        properties = {**room.properties, "candidate_type": "wall_pair_linework"}
+        renamed.append(
+            replace(
+                room,
+                room_id=f"ROOM_WALLPAIR_{index + 1:06d}",
+                properties=properties,
+            )
+        )
+    return renamed
+
+
+def _polygon_iou(left: Polygon, right: Polygon) -> float:
+    """2 つの多角形の IoU (積集合 / 和集合) を返す。"""
+    try:
+        union_area = left.union(right).area
+    except (TypeError, ValueError):
+        return 0.0
+    if union_area <= 0:
+        return 0.0
+    try:
+        return left.intersection(right).area / union_area
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def merge_room_candidates(
+    all_lines_rooms: List[Room],
+    wall_pair_rooms: List[Room],
+    iou_threshold: float = 0.5,
+) -> List[Room]:
+    """全線分の部屋候補と壁ペア線分の部屋候補を統合する。
+
+    同じ物理的な部屋が両方の検出で見つかる場合、壁ペア版を優先する
+    (境界が壁面に沿うため面積が本来の部屋広さに近い)。重なりが
+    iou_threshold 未満の候補は別々の部屋として両方残す。
+    無効な境界の候補は落とす。呼び出し前に deduplicate_room_candidates で
+    完全に同一の形状は除去しておくこと。
+    """
+    merged: List[Room] = []
+    merged_polygons: List[Polygon] = []
+    for room in all_lines_rooms:
+        try:
+            polygon = Polygon(room.boundary)
+        except (TypeError, ValueError):
+            continue
+        if polygon.is_empty or not polygon.is_valid or polygon.area <= 0:
+            continue
+        merged.append(room)
+        merged_polygons.append(polygon)
+    for room in wall_pair_rooms:
+        try:
+            polygon = Polygon(room.boundary)
+        except (TypeError, ValueError):
+            continue
+        if polygon.is_empty or not polygon.is_valid or polygon.area <= 0:
+            continue
+        overlapped = [
+            index
+            for index, existing in enumerate(merged_polygons)
+            if _polygon_iou(polygon, existing) >= iou_threshold
+        ]
+        if overlapped:
+            for index in sorted(overlapped, reverse=True):
+                del merged[index]
+                del merged_polygons[index]
+        merged.append(room)
+        merged_polygons.append(polygon)
+    return merged
+
+
 def associate_room_names(drawing: Drawing, rooms: List[Room]) -> List[Room]:
     """Conservatively associate a single text label with each room candidate.
 
     A label is accepted only when its insertion point lies strictly inside
     exactly one candidate polygon, its text is not numeric/dimension-like, and
-    that room contains exactly one eligible label. Ambiguous cases remain
-    unnamed. This is a first-pass geometric association, not semantic room-name
-    recognition.
+    that room contains exactly one eligible label. A label whose insertion
+    point lies just outside a room (within 100 mm of the boundary) is
+    accepted as a near match when exactly one room is near and that room
+    has no exact label; the association is recorded as "text_near_candidate".
+    Ambiguous cases remain unnamed. This is a first-pass geometric
+    association, not semantic room-name recognition.
     """
     text_records = []
     for element in drawing.elements:
@@ -406,6 +509,7 @@ def associate_room_names(drawing: Drawing, rooms: List[Room]) -> List[Room]:
     # created candidates whose IDs are duplicated. Such candidates must not
     # accidentally share text associations.
     labels_by_room = {id(room): [] for room, _ in room_polygons}
+    unassigned = []
     for element, label, point in text_records:
         matching = []
         for room, polygon in room_polygons:
@@ -417,6 +521,35 @@ def associate_room_names(drawing: Drawing, rooms: List[Room]) -> List[Room]:
         # Do not guess when candidates overlap or share an interior.
         if len(matching) == 1:
             labels_by_room[id(matching[0])].append((element, label))
+        elif len(matching) == 0:
+            unassigned.append((element, label, point))
+
+    # Second pass: a label whose insertion point lies just outside a room
+    # (e.g. the text overflows the wall by a few cm on a real drawing) is
+    # accepted when exactly one room boundary is within the tolerance and
+    # that room has no exact label. The association is recorded separately
+    # so the user can tell it apart from an exact match.
+    near_labels_by_room = {id(room): [] for room, _ in room_polygons}
+    tolerance = None
+    try:
+        area_factor = _AREA_TO_M2[(drawing.units or "").strip().lower()]
+        tolerance = _NAME_NEAR_TOLERANCE_MM / (1000.0 * math.sqrt(area_factor))
+    except KeyError:
+        tolerance = None
+    if tolerance is not None:
+        for element, label, point in unassigned:
+            near = []
+            for room, polygon in room_polygons:
+                try:
+                    distance = polygon.distance(point)
+                except (TypeError, ValueError):
+                    continue
+                # 境界線上の文字は対象外にする (contains と同じ扱い)。
+                # 境界のすぐ外側にある文字だけを近接一致とする。
+                if 0.0 < distance <= tolerance:
+                    near.append(room)
+            if len(near) == 1:
+                near_labels_by_room[id(near[0])].append((element, label))
 
     associated = []
     for room in rooms:
@@ -429,6 +562,16 @@ def associate_room_names(drawing: Drawing, rooms: List[Room]) -> List[Room]:
                 "room_name_association": "single_text_inside_candidate",
             }
             associated.append(replace(room, room_name=label, properties=properties))
-        else:
-            associated.append(room)
+            continue
+        near_matches = near_labels_by_room.get(id(room), [])
+        if len(matches) == 0 and len(near_matches) == 1:
+            element, label = near_matches[0]
+            properties = {
+                **room.properties,
+                "room_name_source_element_id": element.element_id,
+                "room_name_association": "text_near_candidate",
+            }
+            associated.append(replace(room, room_name=label, properties=properties))
+            continue
+        associated.append(room)
     return associated

@@ -28,7 +28,9 @@ def _wait_for_detection(window, timeout_s=10.0):
     """部屋検出スレッドの終了を待つ。"""
     deadline = time.monotonic() + timeout_s
     while window._room_thread is not None and time.monotonic() < deadline:
-        QTest.qWait(50)
+        # QTest.qWait でのポーリングはワーカーの GIL を奪うため sleep で待つ。
+        time.sleep(0.1)
+        QApplication.processEvents()
     assert window._room_thread is None, "部屋検出が時間内に終わりませんでした"
 
 
@@ -43,6 +45,8 @@ def _detect(window):
     window._on_room_detection_finished(
         detect_closed_polyline_room_candidates(drawing),
         detect_linework_room_candidates(drawing),
+        [],
+        [],
     )
 
 
@@ -66,7 +70,11 @@ def test_detection_during_load_is_deferred():
 def wait_until_load(window, timeout_s=10.0):
     deadline = time.monotonic() + timeout_s
     while window._load_thread is not None and time.monotonic() < deadline:
-        QTest.qWait(50)
+        # QTest.qWait でのポーリングはワーカーの GIL を奪い、Windows CI で
+        # 読み込みスレッドが進まなくなる（止まる・落ちる）ため、sleep で
+        # GIL を譲りつつイベント処理で完了シグナルを受け取る。
+        time.sleep(0.1)
+        QApplication.processEvents()
     assert window._load_thread is None, "図面の読み込みが時間内に終わりませんでした"
 
 

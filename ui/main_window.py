@@ -44,7 +44,9 @@ from core.analyzer.room_detector import (
     associate_room_names,
     detect_closed_polyline_room_candidates,
     detect_linework_room_candidates,
+    detect_wall_pair_room_candidates,
     deduplicate_room_candidates,
+    merge_room_candidates,
 )
 from core.analyzer.wall_detector import (
     area_factor_for_units,
@@ -97,7 +99,7 @@ class DrawingLoadWorker(QObject):
 class RoomDetectionWorker(QObject):
     """部屋候補の検出をGUIスレッドの外で実行する。"""
 
-    finished = Signal(object, object)
+    finished = Signal(object, object, object, object)
     error = Signal(str)
 
     def __init__(self, drawing: Drawing):
@@ -109,10 +111,26 @@ class RoomDetectionWorker(QObject):
         try:
             polyline_rooms = detect_closed_polyline_room_candidates(self._drawing)
             linework_rooms = detect_linework_room_candidates(self._drawing)
-            self.finished.emit(polyline_rooms, linework_rooms)
         except Exception as exc:
             logger.exception("部屋候補の検出に失敗しました")
             self.error.emit(str(exc))
+            return
+        # 壁ペアの検出は部屋候補の表示を妨げない。失敗しても壁ペア部屋と
+        # 壁芯面積の付与だけを諦め、全線分の部屋候補はそのまま表示する。
+        wall_pair_rooms: list = []
+        wall_pairs: list = []
+        try:
+            wall_pairs = detect_wall_pairs(self._drawing)
+            wall_pair_rooms = detect_wall_pair_room_candidates(
+                self._drawing, wall_pairs
+            )
+        except Exception:
+            logger.exception("壁ペア部屋候補の検出に失敗しました")
+            wall_pair_rooms = []
+            wall_pairs = []
+        self.finished.emit(
+            polyline_rooms, linework_rooms, wall_pair_rooms, wall_pairs
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -743,10 +761,17 @@ class MainWindow(QMainWindow):
         self._log("error", f"部屋候補の検出に失敗: {message}")
         QMessageBox.warning(self, "部屋候補の検出", f"解析に失敗しました。\n{message}")
 
-    @Slot(object, object)
-    def _on_room_detection_finished(self, polyline_rooms: list, linework_rooms: list) -> None:
+    @Slot(object, object, object, object)
+    def _on_room_detection_finished(
+        self,
+        polyline_rooms: list,
+        linework_rooms: list,
+        wall_pair_rooms: list,
+        wall_pairs: list,
+    ) -> None:
         self._label_status.setText("状態：部屋候補の解析完了")
         rooms = deduplicate_room_candidates(polyline_rooms, linework_rooms)
+        rooms = merge_room_candidates(rooms, wall_pair_rooms)
         if self._drawing is not None:
             rooms = associate_room_names(self._drawing, rooms)
         self._reviewed_rooms = set()
@@ -761,11 +786,10 @@ class MainWindow(QMainWindow):
         if self._deleted_room_ids:
             rooms = [r for r in rooms if r.room_id not in self._deleted_room_ids]
         self._rooms = rooms
-        # 二重線の壁を検出し、壁芯面積が求まる部屋へ付与する。
+        # 検出ワーカーで求めた二重線の壁を使い、壁芯面積が求まる部屋へ付与する。
         # 壁の検出に失敗しても部屋候補の表示は妨げない。
-        if self._drawing is not None:
+        if self._drawing is not None and wall_pairs:
             try:
-                wall_pairs = detect_wall_pairs(self._drawing)
                 factor = area_factor_for_units(self._drawing.units)
                 attached = attach_wall_info(rooms, wall_pairs, factor)
                 self._log(
@@ -775,7 +799,7 @@ class MainWindow(QMainWindow):
             except Exception as exc:
                 logger.exception("二重線の壁の検出に失敗しました")
                 self._log("warn", f"二重線の壁の検出に失敗しました: {exc}")
-        self._log("info", f"部屋候補: ポリライン {len(polyline_rooms)} 件 / 線分 {len(linework_rooms)} 件")
+        self._log("info", f"部屋候補: ポリライン {len(polyline_rooms)} 件 / 線分 {len(linework_rooms)} 件 / 壁ペア線分 {len(wall_pair_rooms)} 件")
         if not rooms:
             self._room_overlay.clear(self._scene)
             self._room_panel.clear()
