@@ -28,7 +28,7 @@ from core.drawing_viewer.dimension_overlay import (
 )
 from core.analyzer.dimension_check import (
     DimensionCheck,
-    calibrate_scale_from_dimension,
+    calibrate_scale_from_checks,
     check_dimensions,
     rescale_drawing,
 )
@@ -640,6 +640,8 @@ class MainWindow(QMainWindow):
         """不一致の寸法から換算率を計算し直し、図面全体を拡大・縮小する。
 
         倍率調整はこのボタンの操作でのみ行い、自動では行わない。
+        換算率は複数の寸法の合意（3 件以上が 5% 以内で一致）から決め、
+        1 件だけの寸法では調整しない。合意がなければ理由を示して拒否する。
         調整後は図面を描き直し、寸法照合と部屋検出をやり直す。
         """
         if self._drawing is None or self._drawing.file_type != "pdf":
@@ -658,19 +660,23 @@ class MainWindow(QMainWindow):
             )
             self._log("info", "倍率調整：調整対象の寸法がないため、何もしませんでした。")
             return
-        check = max(candidates, key=lambda c: c.confidence)
         meta = getattr(self._drawing, "_meta", {})
         current_mm_per_pt = float(meta.get("mm_per_pt") or self._drawing.scale or 1.0)
         try:
-            new_mm_per_pt = calibrate_scale_from_dimension(check, current_mm_per_pt)
+            new_mm_per_pt, agreeing = calibrate_scale_from_checks(
+                candidates, current_mm_per_pt
+            )
+            # 調整の根拠として、合意した寸法のうち確信度が最も高いものを記録する。
+            check = max(agreeing, key=lambda c: c.confidence)
             factor = rescale_drawing(self._drawing, new_mm_per_pt, source_check=check)
         except ValueError as exc:
             QMessageBox.warning(self, "倍率調整", f"換算率を計算できませんでした。\n{exc}")
+            self._log("warn", f"倍率調整：{exc}")
             return
         self._log(
             "info",
-            f"倍率調整：{check.dimension_id}（寸法 {check.value_mm:.0f}mm／実測 {check.measured_mm:.0f}mm）を使い、"
-            f"換算率を {current_mm_per_pt:.6f} → {new_mm_per_pt:.6f} mm/pt（倍率 {factor:.6f}）に変更しました。",
+            f"倍率調整：{len(agreeing)} 件の寸法が合意した換算率 {new_mm_per_pt:.6f} mm/pt を使い、"
+            f"{current_mm_per_pt:.6f} → {new_mm_per_pt:.6f} mm/pt（倍率 {factor:.6f}）に変更しました。",
         )
         # 図面を描き直し、寸法照合と部屋検出をやり直す。
         self._renderer.render(self._drawing, self._scene)
@@ -683,7 +689,7 @@ class MainWindow(QMainWindow):
             self,
             "倍率調整",
             f"換算率を {current_mm_per_pt:.4f} → {new_mm_per_pt:.4f} mm/pt に変更しました。\n"
-            f"（{check.dimension_id}：寸法 {check.value_mm:.0f}mm／実測 {check.measured_mm:.0f}mm）\n"
+            f"（{len(agreeing)} 件の寸法が {new_mm_per_pt:.4f} mm/pt で一致しました）\n"
             f"寸法照合と部屋検出をやり直しています。",
         )
 

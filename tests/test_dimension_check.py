@@ -8,6 +8,7 @@ from core.models.drawing import Drawing, LineElement, PolylineElement, TextEleme
 from core.parser.pdf_parser import PdfParser
 from core.analyzer.dimension_check import (
     DimensionCheck,
+    calibrate_scale_from_checks,
     calibrate_scale_from_dimension,
     check_dimensions,
     parse_dimension_value,
@@ -197,22 +198,23 @@ def test_no_measured_line_is_not_determinable(tmp_path):
 
 
 def test_tolerance_boundary_is_matched():
-    # 差がちょうど許容誤差（0.5%）なら一致。
-    drawing = _make_manual_drawing(measured_length_mm=1005.0, value_mm=1000.0)
+    # 差がちょうど許容誤差（0.5%）なら一致。測定対象が寸法区間より
+    # 短い場合の境界（実測 995mm に対して寸法 1000mm）。
+    drawing = _make_manual_drawing(measured_length_mm=995.0, value_mm=1000.0)
     checks = check_dimensions(drawing)
     assert len(checks) == 1
     assert checks[0].status == "matched"
-    assert checks[0].difference_mm == pytest.approx(5.0)
+    assert checks[0].difference_mm == pytest.approx(-5.0)
     assert checks[0].tolerance_mm == pytest.approx(5.0)
 
 
 def test_just_over_tolerance_is_mismatched():
     # 差が許容誤差（0.5%）をわずかに超えれば不一致。
-    drawing = _make_manual_drawing(measured_length_mm=1006.0, value_mm=1000.0)
+    drawing = _make_manual_drawing(measured_length_mm=994.0, value_mm=1000.0)
     checks = check_dimensions(drawing)
     assert len(checks) == 1
     assert checks[0].status == "mismatched"
-    assert checks[0].difference_mm == pytest.approx(6.0)
+    assert checks[0].difference_mm == pytest.approx(-6.0)
 
 
 def test_calibrate_and_rescale_makes_dimensions_match(tmp_path):
@@ -266,3 +268,221 @@ def test_rescale_with_invalid_factor_raises(tmp_path):
         rescale_drawing(drawing, 0.0)
     with pytest.raises(ValueError):
         rescale_drawing(drawing, -5.0)
+
+
+def _make_chain_drawing(measured_segments, value_mm, dim_length=1000.0):
+    """開口で分断された壁など、複数の同一線上線分からなる測定対象の Drawing。
+
+    寸法線 (0,100)-(dim_length,100)、引出線は両端に (x,0)-(x,150)、
+    測定対象は measured_segments の線分群、寸法テキストは寸法線のすぐ上。
+    """
+    drawing = Drawing(
+        drawing_id="chain", file_name="chain", file_type="pdf",
+        scale=10.0, units="mm", elements=[],
+    )
+    drawing._meta = {"mm_per_pt": 10.0}
+    counter = [0]
+
+    def _line(start, end):
+        counter[0] += 1
+        return LineElement(
+            element_id=f"L{counter[0]:03d}", element_type="LINE",
+            start=list(start), end=list(end),
+        )
+
+    def _text(text, bbox):
+        counter[0] += 1
+        return TextElement(
+            element_id=f"T{counter[0]:03d}", element_type="TEXT",
+            text=text, insertion_point=[bbox[0], bbox[3]],
+            height=10.0, bbox=list(bbox),
+        )
+
+    drawing.elements = [
+        _line((0, 100), (dim_length, 100)),
+        _line((0, 0), (0, 150)),
+        _line((dim_length, 0), (dim_length, 150)),
+    ]
+    for start, end in measured_segments:
+        drawing.elements.append(_line(start, end))
+    drawing.elements.append(
+        _text(str(int(value_mm)), (dim_length / 2 - 50, 105, dim_length / 2 + 50, 125))
+    )
+    return drawing
+
+
+def test_measured_line_merged_across_door_gap():
+    # 壁が開口 (200mm) で2本に分かれていても、鎖として寸法区間を覆えば一致する。
+    drawing = _make_chain_drawing(
+        [((0, 0), (400, 0)), ((600, 0), (1000, 0))], value_mm=1000.0
+    )
+    checks = check_dimensions(drawing)
+    assert len(checks) == 1
+    assert checks[0].status == "matched"
+    # 実測長は鎖の両端の間隔 (開口を含む 1000mm)。
+    assert checks[0].measured_mm == pytest.approx(1000.0)
+
+
+def test_measured_line_double_wall_uses_touched_face():
+    # 二重線の壁: 引出線が接する面 (y=0) ともう1本 (y=10) がある。
+    # どちらも同じ長さだが、接する面が測定対象になる。
+    drawing = _make_chain_drawing(
+        [((0, 0), (1000, 0)), ((0, 10), (1000, 10))], value_mm=1000.0
+    )
+    checks = check_dimensions(drawing)
+    assert len(checks) == 1
+    assert checks[0].status == "matched"
+    assert checks[0].measured_mm == pytest.approx(1000.0)
+    assert checks[0].measured_line_id == "L004"
+
+
+def test_measured_line_broken_into_three_segments():
+    drawing = _make_chain_drawing(
+        [((0, 0), (300, 0)), ((400, 0), (700, 0)), ((800, 0), (1000, 0))],
+        value_mm=1000.0,
+    )
+    checks = check_dimensions(drawing)
+    assert len(checks) == 1
+    assert checks[0].status == "matched"
+    assert checks[0].measured_mm == pytest.approx(1000.0)
+
+
+def test_measured_line_covering_less_than_half_is_not_determinable():
+    # 壁が寸法区間の半分未満しか覆わなければ、測定対象は見つからない。
+    drawing = _make_chain_drawing(
+        [((0, 0), (400, 0))], value_mm=1000.0
+    )
+    checks = check_dimensions(drawing)
+    assert len(checks) == 1
+    assert checks[0].status == "not_determinable"
+    assert checks[0].measured_mm is None
+
+
+def test_small_numbers_are_not_dimensions():
+    # 部屋番号などの小さな数値は寸法ではない。
+    drawing = _make_manual_drawing(measured_length_mm=1000.0, value_mm=1000.0)
+    for element in drawing.elements:
+        if isinstance(element, TextElement):
+            element.text = "3"
+    checks = check_dimensions(drawing)
+    assert checks == []
+
+
+def test_short_dimension_line_is_a_candidate():
+    # 475mm の寸法 (13.5pt) のような短い寸法線も候補になる。
+    drawing = _make_chain_drawing(
+        [((0, 0), (475, 0))], value_mm=475.0, dim_length=475.0
+    )
+    checks = check_dimensions(drawing)
+    assert len(checks) == 1
+    assert checks[0].status == "matched"
+    assert checks[0].value_mm == 475.0
+
+
+def _check(value_mm, measured_pt, status="mismatched"):
+    return DimensionCheck(
+        dimension_id=f"DIM{value_mm:05.0f}", value_mm=value_mm,
+        dimension_text=str(int(value_mm)), status=status, confidence=0.9,
+        measured_length_pt=measured_pt,
+        measured_mm=value_mm if status == "matched" else None,
+    )
+
+
+def test_calibrate_consensus_ignores_outlier():
+    # 3件が 35.3mm/pt 前後で一致し、1件が外れ値 (6.06) の場合、中央値を返す。
+    checks = [
+        _check(6000.0, 170.1),
+        _check(24000.0, 680.0),
+        _check(48500.0, 1375.0),
+        _check(1116.0, 184.0),
+    ]
+    new_scale, agreeing = calibrate_scale_from_checks(checks, 1.0)
+    assert new_scale == pytest.approx(6000.0 / 170.1, rel=0.01)
+    assert len(agreeing) == 3
+    assert all(c.value_mm != 1116.0 for c in agreeing)
+
+
+def test_calibrate_consensus_refuses_when_too_few_agree():
+    # 合意する寸法が2件だけでは調整しない。
+    checks = [_check(6000.0, 170.1), _check(24000.0, 680.0)]
+    with pytest.raises(ValueError):
+        calibrate_scale_from_checks(checks, 1.0)
+
+
+def test_calibrate_consensus_refuses_when_all_disagree():
+    checks = [
+        _check(6000.0, 170.1),
+        _check(24000.0, 1000.0),
+        _check(48500.0, 500.0),
+    ]
+    with pytest.raises(ValueError):
+        calibrate_scale_from_checks(checks, 1.0)
+
+
+def test_calibrate_consensus_refuses_without_measured_lines():
+    check = DimensionCheck(
+        dimension_id="DIM001", value_mm=4000.0, dimension_text="4000",
+        status="not_determinable", confidence=0.85, measured_length_pt=None,
+    )
+    with pytest.raises(ValueError):
+        calibrate_scale_from_checks([check], 10.0)
+
+
+def _make_between_objects_drawing(with_top_object=True):
+    """2つの対象線の間の距離を測る垂直寸法の Drawing（実図面の形状）。
+
+    寸法線は垂直 (100,0)-(100,1000)、引出線は両端に水平 (100,0)-(150,0) と
+    (100,1000)-(150,1000)。対象線は引出線の直線上にあり、寸法線から離れた
+    位置 (x 300-800) にある水平線。寸法値は 1000mm。
+    """
+    drawing = Drawing(
+        drawing_id="between", file_name="between", file_type="pdf",
+        scale=10.0, units="mm", elements=[],
+    )
+    drawing._meta = {"mm_per_pt": 10.0}
+    counter = [0]
+
+    def _line(start, end):
+        counter[0] += 1
+        return LineElement(
+            element_id=f"L{counter[0]:03d}", element_type="LINE",
+            start=list(start), end=list(end),
+        )
+
+    def _text(text, bbox):
+        counter[0] += 1
+        return TextElement(
+            element_id=f"T{counter[0]:03d}", element_type="TEXT",
+            text=text, insertion_point=[bbox[0], bbox[3]],
+            height=10.0, bbox=list(bbox),
+        )
+
+    drawing.elements = [
+        _line((100, 0), (100, 1000)),
+        _line((100, 0), (150, 0)),
+        _line((100, 1000), (150, 1000)),
+        _line((300, 0), (800, 0)),
+        _text("1000", (105, 490, 115, 510)),  # 寸法線 (x=100) の近くに置く。
+    ]
+    if with_top_object:
+        drawing.elements.append(_line((300, 1000), (800, 1000)))
+    return drawing
+
+
+def test_measured_line_between_two_object_lines():
+    # 実図面の寸法は、平行な壁そのものではなく2つの対象線の間の距離を
+    # 測っている。両方の引出線に対象線分があれば、寸法線の長さが実測長になる。
+    drawing = _make_between_objects_drawing()
+    checks = check_dimensions(drawing)
+    assert len(checks) == 1
+    assert checks[0].status == "matched"
+    assert checks[0].measured_mm == pytest.approx(1000.0)
+
+
+def test_measured_line_between_objects_needs_both_sides():
+    # 片方の対象線分がなければ、測定対象は見つからない。
+    drawing = _make_between_objects_drawing(with_top_object=False)
+    checks = check_dimensions(drawing)
+    assert len(checks) == 1
+    assert checks[0].status == "not_determinable"
+    assert checks[0].measured_mm is None
