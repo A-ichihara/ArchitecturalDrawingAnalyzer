@@ -46,6 +46,30 @@ def _detect(window):
     )
 
 
+def test_detection_during_load_is_deferred():
+    _ensure_qt_app()
+    window = MainWindow()
+    window._load_dxf(os.path.join(DATA_DIR, "sample_01_rect.dxf"))
+    assert window._load_thread is not None
+    # 読み込み中に検出を呼んでも、部屋の検出スレッドは始まらない。
+    window._detect_room_candidates()
+    assert window._room_thread is None
+    assert window._rooms == []
+
+    wait_until_load(window)
+    window._detect_room_candidates()
+    _wait_for_detection(window)
+    assert len(window._rooms) == 1
+    window.close()
+
+
+def wait_until_load(window, timeout_s=10.0):
+    deadline = time.monotonic() + timeout_s
+    while window._load_thread is not None and time.monotonic() < deadline:
+        QTest.qWait(50)
+    assert window._load_thread is None, "図面の読み込みが時間内に終わりませんでした"
+
+
 def test_units_combo_disabled_before_load():
     _ensure_qt_app()
     window = MainWindow()
