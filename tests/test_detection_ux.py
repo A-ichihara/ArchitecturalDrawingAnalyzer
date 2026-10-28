@@ -66,6 +66,23 @@ def test_worker_emits_progress_stages_in_order():
     ]
 
 
+def _close_view(view):
+    """表示したビューを閉じ、遅延削除まで処理する。
+
+    表示したままテストを終えると、ビューやシーンの破棄が後続の
+    テストの実行中に行われ、Windows では後片付けの最中に
+    アクセス違反で落ちることがあるため、明示的に片付ける。
+    """
+    from PySide6.QtCore import QEvent
+    from PySide6.QtWidgets import QApplication
+
+    view.close()
+    app = QApplication.instance()
+    if app is not None:
+        app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
+
+
 def _grid_rooms():
     """横一列に並んだ小部屋 10 件 + 大きな部屋 1 件。"""
     rooms = []
@@ -107,6 +124,7 @@ def test_label_visibility_declutters_at_fit_zoom():
     # 最も大きい部屋のラベルは残る。
     big_label, _area = renderer._labels["BIG"]
     assert big_label.isVisible()
+    _close_view(view)
 
 
 def test_label_visibility_shows_more_when_zoomed_in():
@@ -131,6 +149,7 @@ def test_label_visibility_shows_more_when_zoomed_in():
     visible_zoomed = _visible_label_count(renderer)
 
     assert visible_zoomed > visible_fit
+    _close_view(view)
 
 
 def test_label_visibility_with_no_labels_does_nothing():
