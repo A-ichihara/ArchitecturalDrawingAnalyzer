@@ -161,3 +161,66 @@ def test_wall_detection_on_real_sample_does_not_crash():
     assert len(first) == len(second)
     assert len(first) > 0
     assert all(50.0 <= pair.thickness <= 500.0 for pair in first)
+
+
+def test_tiny_cell_long_segments_do_not_explode_grid():
+    # 5000 単位の線分に 0.5 単位のセル（mm の数値を m 単位と誤認した
+    # 場合）では、グリッドへの登録数が約 10 万件に膨れ上がる。
+    # 総当たりへの切り替えにより、候補は同じ 4 組を瞬時に返す。
+    from core.analyzer.wall_detector import _candidate_pairs, _Segment
+
+    segments = [
+        _Segment((0.0, 0.0), (5000.0, 0.0)),
+        _Segment((5000.0, 0.0), (5000.0, 3000.0)),
+        _Segment((5000.0, 3000.0), (0.0, 3000.0)),
+        _Segment((0.0, 3000.0), (0.0, 0.0)),
+    ]
+    assert _candidate_pairs(segments, 0.5) == [(0, 1), (0, 3), (1, 2), (2, 3)]
+    assert _candidate_pairs(segments, 500.0) == [(0, 1), (0, 3), (1, 2), (2, 3)]
+
+
+def test_wall_detection_with_metre_units_on_mm_numbers():
+    # test_changing_units_recalculates_areas と同じ状況：5000x3000 の
+    # 数値を m 単位と誤認した場合。壁ペアは 0 件で、グリッドの爆発で
+    # 落ちないこと。
+    drawing = _drawing([_rect_polyline("ROOM1", 0, 0, 5000, 3000)], units="m")
+    assert detect_wall_pairs(drawing) == []
+
+
+def test_candidate_pairs_never_miss_close_pairs():
+    # グリッド経路・総当たり経路のどちらでも、距離が最大距離以内の
+    # 組は必ず候補に含まれる（絞り込みの漏れがないこと）。
+    from shapely.geometry import LineString
+
+    from core.analyzer.wall_detector import _candidate_pairs, _Segment
+
+    segments = [
+        _Segment((0.0, 0.0), (5000.0, 0.0)),
+        _Segment((0.0, 200.0), (5000.0, 200.0)),
+        _Segment((0.0, 1000.0), (5000.0, 1000.0)),
+        _Segment((100.0, 0.0), (100.0, 3000.0)),
+        _Segment((4000.0, 0.0), (4000.0, 3000.0)),
+    ]
+    for max_distance in (500.0, 0.5, 200.0):
+        result = _candidate_pairs(segments, max_distance)
+        assert result == sorted(set(result))
+        for i in range(len(segments)):
+            for j in range(i + 1, len(segments)):
+                a = LineString([segments[i].p1, segments[i].p2])
+                b = LineString([segments[j].p1, segments[j].p2])
+                if float(a.distance(b)) <= max_distance:
+                    assert (i, j) in result
+
+
+def test_large_n_tiny_cell_uses_strtree_fallback():
+    # 線分が多く（総当たりできない）、かつセルが線分に比べて極端に
+    # 小さい場合、STRtree で最大距離以内の組を直接求める。グリッド
+    # だけでは登録数が爆発し、セル拡大ではセル内の組の列挙が爆発する。
+    from core.analyzer.wall_detector import _candidate_pairs, _Segment
+
+    segments = [
+        _Segment((float(i * 10), 0.0), (float(i * 10), 5000.0)) for i in range(600)
+    ]
+    segments.append(_Segment((0.4, 0.0), (0.4, 5000.0)))
+    # 0.5 以内にあるのは x=0 と x=0.4 の線だけ。
+    assert _candidate_pairs(segments, 0.5) == [(0, 600)]
