@@ -145,11 +145,36 @@ def test_open_pdf_scale_dialog_cancelled_does_not_load(
     window.close()
 
 
+def _make_three_room_pdf(tmp_path):
+    """3 部屋の PDF。各部屋の寸法が同じ方向に 2% ずれている。
+
+    4000/408pt、2000/204pt、3000/306pt はすべて同じ換算率 9.8039mm/pt を
+    示すため、合意形成で倍率調整できる。
+    """
+    pdf_path = os.path.join(tmp_path, "three_rooms.pdf")
+    doc = pymupdf.open()
+    page = doc.new_page(width=1600, height=900)
+    rooms = [
+        (100, 508, "4000"),
+        (600, 804, "2000"),
+        (900, 1206, "3000"),
+    ]
+    for x0, x1, text in rooms:
+        page.draw_rect(pymupdf.Rect(x0, 100, x1, 400), color=(0, 0, 0), fill=None, width=1)
+        page.draw_line(pymupdf.Point(x0, 450), pymupdf.Point(x1, 450), color=(0, 0, 0), width=0.5)
+        page.draw_line(pymupdf.Point(x0, 400), pymupdf.Point(x0, 460), color=(0, 0, 0), width=0.5)
+        page.draw_line(pymupdf.Point(x1, 400), pymupdf.Point(x1, 460), color=(0, 0, 0), width=0.5)
+        page.insert_text(((x0 + x1) / 2 - 20, 440), text, fontsize=12)
+    doc.save(pdf_path)
+    doc.close()
+    return pdf_path
+
+
 def test_calibrate_scale_from_mismatched_dimension(
     tmp_path, monkeypatch, quiet_message_boxes
 ):
     _ensure_qt_app()
-    pdf_path = _make_pdf(tmp_path)
+    pdf_path = _make_three_room_pdf(tmp_path)
     window = MainWindow()
     _open_pdf_with_scale(window, monkeypatch, pdf_path, 10.0)
     assert window._act_calibrate.isEnabled()
@@ -157,15 +182,35 @@ def test_calibrate_scale_from_mismatched_dimension(
     window._calibrate_scale()
     _wait_for_detection(window)
 
-    # 2000 の寸法（実測 204pt）から換算率 2000/204 を求め、図面を縮小する。
+    # 3 件の寸法が合意した換算率 2000/204 (= 4000/408 = 3000/306) を求め、
+    # 図面を縮小する。
     assert window._drawing.scale == pytest.approx(2000.0 / 204.0)
     assert window._drawing._meta["units_source"] == "calibrated_from_dimension"
     assert "倍率調整" in window._log_text.toPlainText()
-    # 調整後の再照合では、調整に使った 2000 の寸法が一致している。
+    # 調整後の再照合では、3 件の寸法がすべて一致している。
     rechecked = {c.dimension_text: c.status for c in window._dimension_checks}
-    assert rechecked["2000"] == "matched"
+    assert rechecked == {"4000": "matched", "2000": "matched", "3000": "matched"}
     # 部屋の検出もやり直されている。
-    assert len(window._rooms) == 2
+    assert len(window._rooms) == 3
+    window.close()
+
+
+def test_calibrate_refuses_with_single_mismatched_dimension(
+    tmp_path, monkeypatch, quiet_message_boxes
+):
+    # 不一致の寸法が 1 件だけでは、合意が取れないため調整しない。
+    # 1 件だけの寸法から換算率を決めると、外れ値を信じて倍率を壊す。
+    _ensure_qt_app()
+    pdf_path = _make_pdf(tmp_path)
+    window = MainWindow()
+    _open_pdf_with_scale(window, monkeypatch, pdf_path, 10.0)
+    assert window._act_calibrate.isEnabled()
+
+    window._calibrate_scale()
+
+    assert window._drawing.scale == pytest.approx(10.0)
+    assert window._drawing._meta["units_source"] != "calibrated_from_dimension"
+    assert "一致しません" in window._log_text.toPlainText()
     window.close()
 
 

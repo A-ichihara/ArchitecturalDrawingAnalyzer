@@ -33,8 +33,14 @@ _CONFIDENT_THRESHOLD = 0.75
 # 寸法線の候補として扱う確信度の下限。これ未満は寸法ではないとみなす。
 _CANDIDATE_THRESHOLD = 0.5
 
-# 寸法線の候補とする直線の最小長（mm）。これより短い線は寸法線にしない。
-_MIN_DIMENSION_LINE_LENGTH_MM = 100.0
+# 寸法線の候補とする直線の最小長（図面単位。PDF では pt、DXF では mm）。
+# 倍率が未確定の PDF では mm 換算ができないため、単位は図面座標のまま
+# 小さな値にする。寸法線らしさは引出線とテキストの近さで判断する。
+_MIN_DIMENSION_LINE_LENGTH = 2.0
+
+# 寸法値として扱う最小値（mm）。部屋番号などの小さな数値（"2"、"3"）を
+# 寸法と誤認しないための下限。
+_MIN_DIMENSION_VALUE_MM = 50.0
 
 # 寸法線の方向の許容誤差（度）。水平・垂直からこの範囲内なら軸平行とみなす。
 _AXIS_ANGLE_TOL_DEG = 2.0
@@ -205,7 +211,7 @@ def _find_dimension_line(
     for segment in segments:
         if not _is_axis_aligned(segment):
             continue
-        if segment.length < _MIN_DIMENSION_LINE_LENGTH_MM:
+        if segment.length < _MIN_DIMENSION_LINE_LENGTH:
             continue
         distance, t = _point_to_segment_distance(center, segment)
         if distance > max(3.0 * font_height, 0.1 * segment.length):
@@ -220,7 +226,7 @@ def _find_dimension_line(
                     continue
                 if _angle_diff_deg(other.angle_deg, segment.angle_deg) < 90.0 - _PERPENDICULAR_ANGLE_TOL_DEG:
                     continue
-                if not (font_height <= other.length <= 0.35 * segment.length):
+                if not (font_height <= other.length <= 1.0 * segment.length):
                     continue
                 end_distance, _ = _point_to_segment_distance(endpoint, other)
                 if end_distance <= max(2.0 * font_height, 0.02 * segment.length):
@@ -249,6 +255,105 @@ def _find_dimension_line(
     return best, best_score, best_extensions
 
 
+def _find_measured_line_between_objects(
+    dimension_line: _Segment,
+    extensions: List[_Segment],
+    segments: List[_Segment],
+    font_height: float,
+) -> Optional[_Segment]:
+    """寸法が2つの対象線の間の距離を測っている場合の測定対象を探す。
+
+    実図面の寸法は、平行な壁そのものの長さではなく、2本の水平線
+    （壁）の間の垂直距離を測っていることが多い。その場合、測定対象の
+    線は寸法線と平行には存在せず、引出線が指す2つの対象線の間の距離
+    が実測長になる。各引出線について、その直線上にあり、寸法線から
+    遠い側にある実際の対象線分（引出線・寸法線そのものは除く）を探し、
+    両方の引出線で見つかれば、2つの対象線の間の距離を実測長とする。
+    見つからなければ None。
+    """
+    if len(extensions) < 2:
+        return None
+    tolerance = max(2.0 * font_height, 0.02 * dimension_line.length)
+    # 寸法線の軸方向と垂線方向。
+    dx = dimension_line.p2[0] - dimension_line.p1[0]
+    dy = dimension_line.p2[1] - dimension_line.p1[1]
+    dim_length = math.hypot(dx, dy)
+    if dim_length == 0.0:
+        return None
+    ux, uy = dx / dim_length, dy / dim_length
+
+    def axis_param(point: Tuple[float, float]) -> float:
+        return (point[0] - dimension_line.p1[0]) * ux + (point[1] - dimension_line.p1[1]) * uy
+
+    def extension_axis_param(point: Tuple[float, float], ext: _Segment) -> float:
+        ex = ext.p2[0] - ext.p1[0]
+        ey = ext.p2[1] - ext.p1[1]
+        elen = math.hypot(ex, ey)
+        if elen == 0.0:
+            return 0.0
+        return ((point[0] - ext.p1[0]) * ex + (point[1] - ext.p1[1]) * ey) / elen
+
+    object_ids: List[str] = []
+    for endpoint in (dimension_line.p1, dimension_line.p2):
+        # この端点に対応する引出線を探す。
+        ext = None
+        for candidate in extensions:
+            end_distance, _ = _point_to_segment_distance(endpoint, candidate)
+            if end_distance <= max(2.0 * font_height, 0.02 * dimension_line.length):
+                ext = candidate
+                break
+        if ext is None:
+            return None
+        # 引出線の対象側の端（寸法線の端点から最も遠い端）。
+        far_end = max(
+            (ext.p1, ext.p2),
+            key=lambda p: math.hypot(p[0] - endpoint[0], p[1] - endpoint[1]),
+        )
+        far_param = extension_axis_param(far_end, ext)
+        # 引出線と同一線上にあり、対象側にある最も近い対象線分を探す。
+        best: Optional[_Segment] = None
+        best_distance = float("inf")
+        for segment in segments:
+            if segment is ext or segment is dimension_line:
+                continue
+            if _angle_diff_deg(segment.angle_deg, ext.angle_deg) > _PARALLEL_ANGLE_TOL_DEG:
+                continue
+            # 引出線の直線からの垂線距離。
+            ex = ext.p2[0] - ext.p1[0]
+            ey = ext.p2[1] - ext.p1[1]
+            elen = math.hypot(ex, ey)
+            if elen == 0.0:
+                continue
+            perp = abs(
+                (segment.p1[0] - ext.p1[0]) * (-ey / elen)
+                + (segment.p1[1] - ext.p1[1]) * (ex / elen)
+            )
+            if perp > tolerance:
+                continue
+            # 対象側（引出線の端より先）にあること。
+            seg_lo = min(
+                extension_axis_param(segment.p1, ext),
+                extension_axis_param(segment.p2, ext),
+            )
+            seg_hi = max(
+                extension_axis_param(segment.p1, ext),
+                extension_axis_param(segment.p2, ext),
+            )
+            if seg_hi < far_param - tolerance:
+                continue
+            if perp < best_distance:
+                best = segment
+                best_distance = perp
+        if best is None:
+            return None
+        object_ids.append(best.element_id)
+    # 両方の引出線に対象線分があれば、2つの対象線の間の距離が実測長。
+    # 寸法線自体がその距離を表すため、寸法線と同じ長さの合成線分を返す。
+    return _Segment(
+        p1=dimension_line.p1, p2=dimension_line.p2, element_id=object_ids[0]
+    )
+
+
 def _find_measured_line(
     dimension_line: _Segment,
     extensions: List[_Segment],
@@ -257,12 +362,24 @@ def _find_measured_line(
 ) -> Optional[_Segment]:
     """寸法線に対応する測定対象の線を探す。
 
-    引出線の、寸法線から最も遠い端（測定対象に接する端）の近くを通り、
-    寸法線と平行で、寸法線の区間と半分以上重なる線のうち、寸法線に
-    最も近いものを返す。見つからなければ None。
+    引出線の対象側の端（測定対象に接する端）を通り、寸法線と平行な
+    直線を「対象線」とする。その直線の近くにある平行な線分を集め、
+    同じ直線上にあるものを連結して「鎖」とみなす。実図面の壁は
+    ポリライン（開口で分断）や二重線で描かれるため、1 本の線分では
+    寸法区間を覆えないことがある。鎖が寸法区間の半分以上を覆えば
+    測定対象とし、実測長は鎖の両端の間隔（寸法区間で切り取ったもの）
+    とする。開口の隙間も寸法に含まれる。鎖のうち、寸法区間を最も
+    多く覆うものを返す。見つからなければ None。
     """
-    # 引出線の測定対象側の端点（寸法線の端点から最も遠い端）。
-    object_points: List[Tuple[float, float]] = []
+    # まず、2つの対象線の間の距離を測る寸法（実図面で一般的）を試す。
+    # 見つからなければ、平行な壁そのものを測る寸法にフォールバックする。
+    between = _find_measured_line_between_objects(
+        dimension_line, extensions, segments, font_height
+    )
+    if between is not None:
+        return between
+    # 引出線の対象側の端点（寸法線の端点から最も遠い端）。
+    far_ends: List[Tuple[float, float]] = []
     for endpoint in (dimension_line.p1, dimension_line.p2):
         for ext in extensions:
             end_distance, _ = _point_to_segment_distance(endpoint, ext)
@@ -272,53 +389,106 @@ def _find_measured_line(
                 (ext.p1, ext.p2),
                 key=lambda p: math.hypot(p[0] - endpoint[0], p[1] - endpoint[1]),
             )
-            object_points.append(far_end)
+            far_ends.append(far_end)
             break
-    if not object_points:
+    if not far_ends:
         return None
 
     tolerance = max(2.0 * font_height, 0.02 * dimension_line.length)
-    best: Optional[_Segment] = None
-    best_distance = float("inf")
+    dx = dimension_line.p2[0] - dimension_line.p1[0]
+    dy = dimension_line.p2[1] - dimension_line.p1[1]
+    dim_length = math.hypot(dx, dy)
+    if dim_length == 0.0:
+        return None
+    ux, uy = dx / dim_length, dy / dim_length
+    vx, vy = -uy, ux
+
+    def projection(point: Tuple[float, float]) -> float:
+        return (point[0] - dimension_line.p1[0]) * ux + (point[1] - dimension_line.p1[1]) * uy
+
+    def offset(point: Tuple[float, float]) -> float:
+        return (point[0] - dimension_line.p1[0]) * vx + (point[1] - dimension_line.p1[1]) * vy
+
+    # 対象線の垂線方向の位置（寸法線の軸からの距離）。
+    target_offsets = [offset(p) for p in far_ends]
+
+    # 候補: 寸法線と平行で、対象線の近くにある線分。区間の中間の線分も
+    # 対象になるよう、引出線の端に接していることは求めない。
+    candidates = []
     for segment in segments:
         if segment is dimension_line:
             continue
         if _angle_diff_deg(segment.angle_deg, dimension_line.angle_deg) > _PARALLEL_ANGLE_TOL_DEG:
             continue
-        if abs(segment.length - dimension_line.length) > 0.5 * dimension_line.length:
+        off = (offset(segment.p1) + offset(segment.p2)) / 2.0
+        if not any(abs(off - target) <= tolerance for target in target_offsets):
             continue
-        # 測定対象の線は引出線の対象側の端点の近くを通ること。
-        if not any(
-            _point_to_segment_distance(point, segment)[0] <= tolerance
-            for point in object_points
+        lo, hi = sorted((projection(segment.p1), projection(segment.p2)))
+        candidates.append((lo, hi, off, segment))
+    if not candidates:
+        return None
+
+    # 同じ直線（垂線方向のずれが許容誤差以内）の線分をグループ化する。
+    groups: List[List[Tuple[float, float, float, _Segment]]] = []
+    for candidate in sorted(candidates, key=lambda c: c[2]):
+        placed = False
+        for group in groups:
+            if abs(candidate[2] - group[0][2]) <= tolerance:
+                group.append(candidate)
+                placed = True
+                break
+        if not placed:
+            groups.append([candidate])
+
+    best: Optional[_Segment] = None
+    best_covered = 0.0
+    best_distance = float("inf")
+    for group in groups:
+        # 寸法区間で切り取った区間の和集合で、覆われている長さを求める。
+        clipped = []
+        for lo, hi, _off, _seg in group:
+            c_lo, c_hi = max(lo, 0.0), min(hi, dim_length)
+            if c_hi > c_lo:
+                clipped.append((c_lo, c_hi))
+        if not clipped:
+            continue
+        clipped.sort()
+        covered = 0.0
+        cur_lo, cur_hi = clipped[0]
+        for c_lo, c_hi in clipped[1:]:
+            if c_lo <= cur_hi:
+                cur_hi = max(cur_hi, c_hi)
+            else:
+                covered += cur_hi - cur_lo
+                cur_lo, cur_hi = c_lo, c_hi
+        covered += cur_hi - cur_lo
+        span_lo = min(c[0] for c in clipped)
+        span_hi = max(c[1] for c in clipped)
+        if covered < 0.5 * dim_length:
+            continue
+        mean_offset = sum(c[2] for c in group) / len(group)
+        # 対象線（引出線の端）に最も近い鎖を優先する。二重線の壁では
+        # 引出線が接する面の方が正しい測定対象になる。
+        obj_distance = min(
+            abs(mean_offset - target) for target in target_offsets
+        )
+        # 覆う長さが最も大きい鎖を選び、同点なら対象点に近いものを選ぶ。
+        if covered > best_covered + 1e-9 or (
+            abs(covered - best_covered) <= 1e-9 and obj_distance < best_distance
         ):
-            continue
-        # 寸法線の区間との重なりが半分以上あること。
-        overlap = _projection_overlap(dimension_line, segment)
-        if overlap < 0.5 * dimension_line.length:
-            continue
-        distance, _ = _point_to_segment_distance(dimension_line.midpoint, segment)
-        if distance < best_distance:
-            best = segment
-            best_distance = distance
+            best_covered = covered
+            best_distance = obj_distance
+            p1 = (
+                dimension_line.p1[0] + ux * span_lo + vx * mean_offset,
+                dimension_line.p1[1] + uy * span_lo + vy * mean_offset,
+            )
+            p2 = (
+                dimension_line.p1[0] + ux * span_hi + vx * mean_offset,
+                dimension_line.p1[1] + uy * span_hi + vy * mean_offset,
+            )
+            longest = max(group, key=lambda c: c[1] - c[0])[3]
+            best = _Segment(p1=p1, p2=p2, element_id=longest.element_id)
     return best
-
-
-def _projection_overlap(a: _Segment, b: _Segment) -> float:
-    """2 つの平行な線分の、a の方向への射影の重なり長さを返す。"""
-    dx = a.p2[0] - a.p1[0]
-    dy = a.p2[1] - a.p1[1]
-    length = math.hypot(dx, dy)
-    if length == 0.0:
-        return 0.0
-    ux, uy = dx / length, dy / length
-
-    def param(point: Tuple[float, float]) -> float:
-        return (point[0] - a.p1[0]) * ux + (point[1] - a.p1[1]) * uy
-
-    a_lo, a_hi = 0.0, length
-    b_lo, b_hi = sorted((param(b.p1), param(b.p2)))
-    return max(0.0, min(a_hi, b_hi) - max(a_lo, b_lo))
 
 
 def check_dimensions(drawing: Drawing, mm_per_pt: Optional[float] = None) -> List[DimensionCheck]:
@@ -341,6 +511,9 @@ def check_dimensions(drawing: Drawing, mm_per_pt: Optional[float] = None) -> Lis
             continue
         value = parse_dimension_value(element.text)
         if value is None:
+            continue
+        # 部屋番号などの小さな数値は寸法ではない。
+        if value < _MIN_DIMENSION_VALUE_MM:
             continue
         dimension_line, confidence, extensions = _find_dimension_line(element, segments)
         if dimension_line is None or confidence < _CANDIDATE_THRESHOLD:
@@ -408,6 +581,61 @@ def calibrate_scale_from_dimension(
     if current_mm_per_pt is None or current_mm_per_pt <= 0:
         raise ValueError("現在の換算率が不正です。")
     return check.value_mm / check.measured_length_pt
+
+
+def calibrate_scale_from_checks(
+    checks: List[DimensionCheck],
+    current_mm_per_pt: float,
+    min_agreeing: int = 3,
+    agreement_tolerance: float = 0.05,
+) -> Tuple[float, List[DimensionCheck]]:
+    """複数の不一致寸法から合意する換算率を求める。
+
+    各寸法の示す換算率（value_mm / measured_length_pt）のうち、
+    互いに agreement_tolerance 以内で一致するものが min_agreeing 件以上
+    ある場合、その中央値を新しい換算率として返す。合意した寸法の一覧も
+    返す。合意がなければ ValueError を返す。1 件だけの寸法から換算率を
+    決めると、誤った寸法（実図面で 1116mm/184pt → 6.06mm/pt のような
+    外れ値）を信じて図面全体の倍率を壊すため、単独の寸法では調整しない。
+    """
+    if current_mm_per_pt is None or current_mm_per_pt <= 0:
+        raise ValueError("現在の換算率が不正です。")
+    implied: List[Tuple[float, DimensionCheck]] = []
+    for check in checks:
+        if check.measured_length_pt is None or check.measured_length_pt <= 0:
+            continue
+        if check.value_mm is None or check.value_mm <= 0:
+            continue
+        implied.append((check.value_mm / check.measured_length_pt, check))
+    if not implied:
+        raise ValueError(
+            "換算率を示す寸法がありません（測定対象の線が見つかっていません）。"
+        )
+    implied.sort(key=lambda item: item[0])
+    # 互いに agreement_tolerance 以内で一致する最大の集団を探す。
+    best_cluster: List[Tuple[float, DimensionCheck]] = []
+    for i in range(len(implied)):
+        cluster = [implied[i]]
+        for j in range(i + 1, len(implied)):
+            if implied[j][0] <= implied[i][0] * (1.0 + agreement_tolerance):
+                cluster.append(implied[j])
+            else:
+                break
+        if len(cluster) > len(best_cluster):
+            best_cluster = cluster
+    if len(best_cluster) < min_agreeing:
+        raise ValueError(
+            f"寸法の示す換算率が一致しません（最も近い集団は {len(best_cluster)} 件、"
+            f"必要 {min_agreeing} 件）。外れ値の寸法があるか、測定対象の線が"
+            "誤っている可能性があります。倍率を手入力で指定してください。"
+        )
+    scales = sorted(scale for scale, _ in best_cluster)
+    if len(scales) % 2 == 1:
+        median = scales[len(scales) // 2]
+    else:
+        median = (scales[len(scales) // 2 - 1] + scales[len(scales) // 2]) / 2.0
+    agreeing = [check for _scale, check in best_cluster]
+    return median, agreeing
 
 
 def rescale_drawing(
