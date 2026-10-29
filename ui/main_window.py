@@ -101,6 +101,7 @@ class RoomDetectionWorker(QObject):
 
     finished = Signal(object, object, object, object)
     error = Signal(str)
+    progress = Signal(str)
 
     def __init__(self, drawing: Drawing):
         super().__init__()
@@ -109,7 +110,9 @@ class RoomDetectionWorker(QObject):
     @Slot()
     def run(self) -> None:
         try:
+            self.progress.emit("ポリラインの部屋候補を検出中…")
             polyline_rooms = detect_closed_polyline_room_candidates(self._drawing)
+            self.progress.emit("線分の部屋候補を検出中…")
             linework_rooms = detect_linework_room_candidates(self._drawing)
         except Exception as exc:
             logger.exception("部屋候補の検出に失敗しました")
@@ -120,7 +123,9 @@ class RoomDetectionWorker(QObject):
         wall_pair_rooms: list = []
         wall_pairs: list = []
         try:
+            self.progress.emit("二重線の壁ペアを検出中…")
             wall_pairs = detect_wall_pairs(self._drawing)
+            self.progress.emit("壁ペア線分の部屋候補を検出中…")
             wall_pair_rooms = detect_wall_pair_room_candidates(
                 self._drawing, wall_pairs
             )
@@ -746,6 +751,7 @@ class MainWindow(QMainWindow):
         self._room_thread.started.connect(self._room_worker.run)
         self._room_worker.finished.connect(self._on_room_detection_finished)
         self._room_worker.error.connect(self._on_room_detection_error)
+        self._room_worker.progress.connect(self._on_room_detection_progress)
         self._room_worker.finished.connect(self._room_thread.quit)
         self._room_worker.error.connect(self._room_thread.quit)
         self._room_worker.finished.connect(self._room_worker.deleteLater)
@@ -766,6 +772,15 @@ class MainWindow(QMainWindow):
         self._label_status.setText("状態：部屋候補の解析失敗")
         self._log("error", f"部屋候補の検出に失敗: {message}")
         QMessageBox.warning(self, "部屋候補の検出", f"解析に失敗しました。\n{message}")
+
+    @Slot(str)
+    def _on_room_detection_progress(self, message: str) -> None:
+        """検出の進行状況をステータスバーとログへ表示する。
+
+        線分検出は実図面で数分かかるため、どの段階にいるかを示す。
+        """
+        self._label_status.setText(f"状態：{message}")
+        self._log("info", message)
 
     @Slot(object, object, object, object)
     def _on_room_detection_finished(
@@ -815,6 +830,9 @@ class MainWindow(QMainWindow):
         # 図面上に部屋候補を重ねて表示し、部屋一覧パネルに反映する。
         self._room_overlay.clear(self._scene)
         self._room_overlay.render_rooms(rooms, self._scene, self._area_basis)
+        # 全体表示ではラベルが重なって読めなくなるため、重なるラベルは
+        # 大きい部屋のものだけを残して隠す。
+        self._room_overlay.update_label_visibility(self._view)
         self._room_panel.set_rooms(rooms)
         self._room_panel.set_area_basis(self._area_basis)
         self._area_basis = self._room_panel.area_basis
@@ -829,6 +847,8 @@ class MainWindow(QMainWindow):
     def _on_zoom_changed(self, zoom: float) -> None:
         """ズーム倍率変更時にステータスバーを更新する。"""
         self._label_zoom.setText(f"ズーム：{zoom * 100:.1f}%")
+        # ズームに応じて重なる部屋ラベルの表示を入れ替える。
+        self._room_overlay.update_label_visibility(self._view)
 
     def _coordinate_unit_suffix(self) -> str:
         """現在の図面座標に対応する単位表示を返す。"""

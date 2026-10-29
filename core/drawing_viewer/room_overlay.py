@@ -17,8 +17,9 @@ from PySide6.QtWidgets import (
     QGraphicsItemGroup,
     QGraphicsPathItem,
     QGraphicsSimpleTextItem,
+    QGraphicsView,
 )
-from PySide6.QtCore import Qt, QPointF
+from PySide6.QtCore import Qt, QPointF, QRectF, QSizeF
 from PySide6.QtGui import QPen, QBrush, QColor, QPainterPath, QFont
 from shapely.geometry import Polygon
 
@@ -89,6 +90,8 @@ class RoomOverlayRenderer:
 
     def __init__(self):
         self._items: Dict[str, QGraphicsItemGroup] = {}
+        # 部屋 ID → (ラベル項目, 面積 m²)。ラベルの重なり整理で使う。
+        self._labels: Dict[str, tuple] = {}
 
     def render_rooms(
         self,
@@ -120,6 +123,41 @@ class RoomOverlayRenderer:
         for group in list(self._items.values()):
             scene.removeItem(group)
         self._items.clear()
+        self._labels.clear()
+
+    def update_label_visibility(self, view: QGraphicsView) -> None:
+        """画面上で重なる部屋ラベルの表示を整理する。
+
+        ラベルは変換を無視して常に一定の画面サイズで描かれるため、
+        全体表示では多数のラベルが重なって読めなくなる。面積の大きい
+        部屋のラベルから順に、画面上で重ならないものだけを表示し、
+        重なるものは隠す。ズームインすれば隠れたラベルも表示される。
+        ビューが未設定・ラベルがない場合は何もしない。
+        """
+        if view is None or not self._labels:
+            return
+        # 面積の大きい部屋のラベルを優先する。
+        ordered = sorted(
+            self._labels.items(), key=lambda kv: -float(kv[1][1])
+        )
+        kept_rects: list = []
+        margin = 2.0
+        for _room_id, (label, _area) in ordered:
+            try:
+                anchor = view.mapFromScene(label.scenePos())
+                size = label.boundingRect().size()
+                rect = QRectF(
+                    QPointF(float(anchor.x()), float(anchor.y())),
+                    QSizeF(float(size.width()), float(size.height())),
+                ).adjusted(-margin, -margin, margin, margin)
+            except Exception:
+                label.setVisible(True)
+                continue
+            if any(rect.intersects(kept) for kept in kept_rects):
+                label.setVisible(False)
+            else:
+                label.setVisible(True)
+                kept_rects.append(rect)
 
     def set_visible(self, visible: bool) -> None:
         """描画したオーバーレイの表示/非表示を切り替える。"""
@@ -169,6 +207,7 @@ class RoomOverlayRenderer:
         label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
         label.setPos(self._label_position(room))
         group.addToGroup(label)
+        self._labels[room.room_id] = (label, float(room.area_m2))
 
         return group
 
