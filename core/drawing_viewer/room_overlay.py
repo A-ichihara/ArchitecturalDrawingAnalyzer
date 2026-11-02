@@ -90,8 +90,10 @@ class RoomOverlayRenderer:
 
     def __init__(self):
         self._items: Dict[str, QGraphicsItemGroup] = {}
-        # 部屋 ID → (ラベル項目, 面積 m²)。ラベルの重なり整理で使う。
-        self._labels: Dict[str, tuple] = {}
+        # 部屋 ID → 面積 m²。ラベルの重なり整理で使う。ラベル項目そのものは
+        # 保持しない（シーンに破棄された項目への参照を持ち続けると、後続の
+        # 後片付けで不正な参照になり得るため、必要なときにグループの子から探す）。
+        self._labels: Dict[str, float] = {}
 
     def render_rooms(
         self,
@@ -134,15 +136,19 @@ class RoomOverlayRenderer:
         重なるものは隠す。ズームインすれば隠れたラベルも表示される。
         ビューが未設定・ラベルがない場合は何もしない。
         """
-        if view is None or not self._labels:
+        if view is None or not self._items:
             return
         # 面積の大きい部屋のラベルを優先する。
         ordered = sorted(
-            self._labels.items(), key=lambda kv: -float(kv[1][1])
+            self._items.items(),
+            key=lambda kv: -float(self._labels.get(kv[0], 0.0)),
         )
         kept_rects: list = []
         margin = 2.0
-        for _room_id, (label, _area) in ordered:
+        for _room_id, group in ordered:
+            label = self._label_item(group)
+            if label is None:
+                continue
             try:
                 anchor = view.mapFromScene(label.scenePos())
                 size = label.boundingRect().size()
@@ -207,9 +213,17 @@ class RoomOverlayRenderer:
         label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
         label.setPos(self._label_position(room))
         group.addToGroup(label)
-        self._labels[room.room_id] = (label, float(room.area_m2))
+        self._labels[room.room_id] = float(room.area_m2)
 
         return group
+
+    @staticmethod
+    def _label_item(group: QGraphicsItemGroup) -> Optional[QGraphicsSimpleTextItem]:
+        """グループ内の部屋名ラベル項目を返す（なければ None）。"""
+        for child in group.childItems():
+            if isinstance(child, QGraphicsSimpleTextItem):
+                return child
+        return None
 
     @staticmethod
     def _label_position(room: Room) -> QPointF:
