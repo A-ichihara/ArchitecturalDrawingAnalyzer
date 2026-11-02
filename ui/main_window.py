@@ -824,9 +824,6 @@ class MainWindow(QMainWindow):
         # 図面上に部屋候補を重ねて表示し、部屋一覧パネルに反映する。
         self._room_overlay.clear(self._scene)
         self._room_overlay.render_rooms(rooms, self._scene, self._area_basis)
-        # 全体表示ではラベルが重なって読めなくなるため、重なるラベルは
-        # 大きい部屋のものだけを残して隠す。
-        self._room_overlay.update_label_visibility(self._view)
         self._room_panel.set_rooms(rooms)
         self._room_panel.set_area_basis(self._area_basis)
         self._area_basis = self._room_panel.area_basis
@@ -841,8 +838,6 @@ class MainWindow(QMainWindow):
     def _on_zoom_changed(self, zoom: float) -> None:
         """ズーム倍率変更時にステータスバーを更新する。"""
         self._label_zoom.setText(f"ズーム：{zoom * 100:.1f}%")
-        # ズームに応じて重なる部屋ラベルの表示を入れ替える。
-        self._room_overlay.update_label_visibility(self._view)
 
     def _coordinate_unit_suffix(self) -> str:
         """現在の図面座標に対応する単位表示を返す。"""
