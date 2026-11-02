@@ -101,7 +101,6 @@ class RoomDetectionWorker(QObject):
 
     finished = Signal(object, object, object, object)
     error = Signal(str)
-    progress = Signal(str)
 
     def __init__(self, drawing: Drawing):
         super().__init__()
@@ -110,9 +109,7 @@ class RoomDetectionWorker(QObject):
     @Slot()
     def run(self) -> None:
         try:
-            self.progress.emit("ポリラインの部屋候補を検出中…")
             polyline_rooms = detect_closed_polyline_room_candidates(self._drawing)
-            self.progress.emit("線分の部屋候補を検出中…")
             linework_rooms = detect_linework_room_candidates(self._drawing)
         except Exception as exc:
             logger.exception("部屋候補の検出に失敗しました")
@@ -123,9 +120,7 @@ class RoomDetectionWorker(QObject):
         wall_pair_rooms: list = []
         wall_pairs: list = []
         try:
-            self.progress.emit("二重線の壁ペアを検出中…")
             wall_pairs = detect_wall_pairs(self._drawing)
-            self.progress.emit("壁ペア線分の部屋候補を検出中…")
             wall_pair_rooms = detect_wall_pair_room_candidates(
                 self._drawing, wall_pairs
             )
@@ -745,7 +740,6 @@ class MainWindow(QMainWindow):
         self._room_thread.started.connect(self._room_worker.run)
         self._room_worker.finished.connect(self._on_room_detection_finished)
         self._room_worker.error.connect(self._on_room_detection_error)
-        self._room_worker.progress.connect(self._on_room_detection_progress)
         self._room_worker.finished.connect(self._room_thread.quit)
         self._room_worker.error.connect(self._room_thread.quit)
         self._room_worker.finished.connect(self._room_worker.deleteLater)
@@ -766,15 +760,6 @@ class MainWindow(QMainWindow):
         self._label_status.setText("状態：部屋候補の解析失敗")
         self._log("error", f"部屋候補の検出に失敗: {message}")
         QMessageBox.warning(self, "部屋候補の検出", f"解析に失敗しました。\n{message}")
-
-    @Slot(str)
-    def _on_room_detection_progress(self, message: str) -> None:
-        """検出の進行状況をステータスバーとログへ表示する。
-
-        線分検出は実図面で数分かかるため、どの段階にいるかを示す。
-        """
-        self._label_status.setText(f"状態：{message}")
-        self._log("info", message)
 
     @Slot(object, object, object, object)
     def _on_room_detection_finished(
