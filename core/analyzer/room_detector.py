@@ -542,17 +542,38 @@ def merge_room_candidates(
     return merged
 
 
-def associate_room_names(drawing: Drawing, rooms: List[Room]) -> List[Room]:
-    """Conservatively associate a single text label with each room candidate.
+_NAME_LIKE_PATTERN = re.compile(r"[ぁ-んァ-ヶ一-龥]")
 
-    A label is accepted only when its insertion point lies strictly inside
-    exactly one candidate polygon, its text is not numeric/dimension-like, and
-    that room contains exactly one eligible label. A label whose insertion
-    point lies just outside a room (within 100 mm of the boundary) is
-    accepted as a near match when exactly one room is near and that room
-    has no exact label; the association is recorded as "text_near_candidate".
-    Ambiguous cases remain unnamed. This is a first-pass geometric
-    association, not semantic room-name recognition.
+
+def _is_name_like(label: str) -> bool:
+    """室名らしい文字かどうか。
+
+    漢字・かなを含み、数字を含まないものを室名らしいとみなす。
+    DN・UP・PS のような短いコードや、数字混じりの注記は室名らしくない。
+    """
+    if not _NAME_LIKE_PATTERN.search(label):
+        return False
+    return not any(character.isdigit() for character in label)
+
+
+def associate_room_names(drawing: Drawing, rooms: List[Room]) -> List[Room]:
+    """Conservatively associate text labels with room candidates.
+
+    A label inside exactly one candidate is that room's label. A label
+    inside several candidates is assigned to the smallest one only when
+    every larger candidate looks like an over-merged blob (it also
+    contains other name-like labels whose smallest candidate is a
+    different, smaller room); the association is then recorded as
+    "smallest_containing_candidate". When one room contains several
+    labels and exactly one of them is name-like (kanji/kana, no digits),
+    that label wins and the others are recorded as auxiliary texts
+    ("name_like_text_prioritized"); if no label wins, the room stays
+    unnamed and its labels are recorded as "unresolved_name_texts" for
+    review. A label whose insertion point lies just outside a room
+    (within 100 mm of the boundary) is accepted as a near match when
+    exactly one room is near and that room has no exact label
+    ("text_near_candidate"). This is a first-pass geometric association,
+    not semantic room-name recognition.
     """
     text_records = _eligible_name_texts(drawing)
 
@@ -570,6 +591,7 @@ def associate_room_names(drawing: Drawing, rooms: List[Room]) -> List[Room]:
     # accidentally share text associations.
     labels_by_room = {id(room): [] for room, _ in room_polygons}
     unassigned = []
+    multi_contained = []
     for element, label, point in text_records:
         matching = []
         for room, polygon in room_polygons:
@@ -578,11 +600,54 @@ def associate_room_names(drawing: Drawing, rooms: List[Room]) -> List[Room]:
                     matching.append(room)
             except (TypeError, ValueError):
                 continue
-        # Do not guess when candidates overlap or share an interior.
         if len(matching) == 1:
-            labels_by_room[id(matching[0])].append((element, label))
+            labels_by_room[id(matching[0])].append((element, label, "single"))
         elif len(matching) == 0:
             unassigned.append((element, label, point))
+        else:
+            multi_contained.append((element, label, matching))
+
+    # A label inside several candidates usually means the candidates
+    # overlap. It is assigned to the smallest candidate only when every
+    # larger candidate shows the signature of an over-merged blob: the
+    # larger candidate also contains other name-like labels whose
+    # smallest candidate is a different, smaller room (as happens when a
+    # large wall-pair region swallows several small labeled rooms).
+    # Otherwise the label stays unassigned, as before.
+    if multi_contained:
+        polygon_by_room = {id(room): polygon for room, polygon in room_polygons}
+        smallest_by_text = []
+        for element, label, matching in multi_contained:
+            areas = [polygon_by_room[id(room)].area for room in matching]
+            minimum = min(areas)
+            winners = [
+                room
+                for room, area in zip(matching, areas)
+                if area == minimum
+            ]
+            smallest_by_text.append(winners[0] if len(winners) == 1 else None)
+        blob_votes = {id(room): set() for room, _ in room_polygons}
+        for (element, label, matching), smallest in zip(
+            multi_contained, smallest_by_text
+        ):
+            if smallest is None or not _is_name_like(label):
+                continue
+            for container in matching:
+                if container is smallest:
+                    continue
+                if polygon_by_room[id(smallest)].area < polygon_by_room[id(container)].area:
+                    blob_votes[id(container)].add(id(smallest))
+        for (element, label, matching), smallest in zip(
+            multi_contained, smallest_by_text
+        ):
+            if smallest is None or not _is_name_like(label):
+                continue
+            if all(
+                len(blob_votes[id(container)]) >= 2
+                for container in matching
+                if container is not smallest
+            ):
+                labels_by_room[id(smallest)].append((element, label, "smallest"))
 
     # Second pass: a label whose insertion point lies just outside a room
     # (e.g. the text overflows the wall by a few cm on a real drawing) is
@@ -615,13 +680,43 @@ def associate_room_names(drawing: Drawing, rooms: List[Room]) -> List[Room]:
     for room in rooms:
         matches = labels_by_room.get(id(room), [])
         if len(matches) == 1:
-            element, label = matches[0]
+            element, label, kind = matches[0]
             properties = {
                 **room.properties,
                 "room_name_source_element_id": element.element_id,
-                "room_name_association": "single_text_inside_candidate",
+                "room_name_association": (
+                    "single_text_inside_candidate"
+                    if kind == "single"
+                    else "smallest_containing_candidate"
+                ),
             }
             associated.append(replace(room, room_name=label, properties=properties))
+            continue
+        if len(matches) >= 2:
+            name_like = [match for match in matches if _is_name_like(match[1])]
+            if len(name_like) == 1:
+                element, label, _kind = name_like[0]
+                properties = {
+                    **room.properties,
+                    "room_name_source_element_id": element.element_id,
+                    "room_name_association": "name_like_text_prioritized",
+                    "auxiliary_texts": [
+                        other_label
+                        for other_element, other_label, _other_kind in matches
+                        if other_element.element_id != element.element_id
+                    ],
+                }
+                associated.append(
+                    replace(room, room_name=label, properties=properties)
+                )
+                continue
+            properties = {
+                **room.properties,
+                "unresolved_name_texts": [
+                    other_label for _el, other_label, _kind in matches
+                ],
+            }
+            associated.append(replace(room, properties=properties))
             continue
         near_matches = near_labels_by_room.get(id(room), [])
         if len(matches) == 0 and len(near_matches) == 1:
