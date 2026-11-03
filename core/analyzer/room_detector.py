@@ -14,6 +14,7 @@ from typing import List
 
 from shapely.geometry import LineString, Point, Polygon
 from shapely.ops import polygonize, unary_union
+from shapely.strtree import STRtree
 
 from core.models.drawing import Drawing, LineElement, PolylineElement, TextElement
 from core.models.room import Room
@@ -24,6 +25,32 @@ from core.analyzer.wall_detector import collect_wall_segments, detect_wall_pairs
 # 部屋名の関連付けで許容する、境界からのずれ (mm)。挿入点が部屋のすぐ外に
 # ある文字を拾うためのもので、壁厚 (100-200mm) を大きく超えない値にする。
 _NAME_NEAR_TOLERANCE_MM = 100.0
+
+
+def _eligible_name_texts(drawing: Drawing):
+    """部屋名として使えるテキストを (要素, ラベル, 挿入点) で返す。
+
+    数字・寸法だけのテキストは部屋名ではないため除く。部屋名の関連付けと、
+    入れ子候補を残すかどうかの判定で同じ基準を使う。
+    """
+    records = []
+    for element in drawing.elements:
+        if not isinstance(element, TextElement):
+            continue
+        label = re.sub(r"\\P", " ", str(element.text or "")).strip()
+        label = re.sub(r"\s+", " ", label)
+        if not label or re.fullmatch(
+            r"[0-9０-９.,，．+＋−±×xX*/=()（）㎡mＭｍ²³\s-]+", label
+        ):
+            continue
+        try:
+            x, y = float(element.insertion_point[0]), float(element.insertion_point[1])
+        except (TypeError, ValueError, IndexError, OverflowError):
+            continue
+        if not (math.isfinite(x) and math.isfinite(y)):
+            continue
+        records.append((element, label, Point(x, y)))
+    return records
 
 
 def detect_closed_polyline_room_candidates(
@@ -123,6 +150,7 @@ def detect_linework_room_candidates(
     drawing: Drawing,
     min_area_m2: float = 1.0,
     gap_tolerance: float | None = None,
+    name_text_points=None,
 ) -> List[Room]:
     """Find provisional room polygons enclosed by connected LINE entities.
 
@@ -250,58 +278,105 @@ def detect_linework_room_candidates(
     except (TypeError, ValueError, OverflowError):
         return []
 
-    # Room.boundary stores one exterior ring only. Nested loops (often caused
-    # by wall thickness or shafts) can produce polygons with holes and a
-    # second polygon inside the hole. Emitting either would make the stored
-    # boundary disagree with area_m2 or create a misleading room candidate.
-    # Conservatively skip both members of any nested pair.
-    nested_indices = {
-        index for index, polygon in enumerate(polygons) if polygon.interiors
-    }
-    exterior_shells = []
+    # Room.boundary stores one exterior ring only, so every polygon is
+    # judged by its exterior shell: the shell becomes the boundary and its
+    # area the room area. Holes (symbols, hatches or furniture drawn inside
+    # a room) no longer disqualify a polygon; their count and total area are
+    # recorded in the room properties together with the net
+    # (hole-subtracted) area so a reviewer can tell what the area includes.
+    # A polygon whose holes cover half or more of its shell is still
+    # skipped: it is typically a wall-thickness ring, not a room.
+    #
+    # A polygon sitting inside a larger polygon's shell (an island in a
+    # hole) is kept only when it contains an eligible room-name text;
+    # unnamed islands are usually symbol or shaft outlines. The containing
+    # polygon itself is always kept. Containment is evaluated with a
+    # spatial index (STRtree) instead of the previous O(P^2) loop.
+    shells: list = []
     for polygon in polygons:
         try:
-            exterior_shells.append(Polygon(polygon.exterior))
+            shells.append(Polygon(polygon.exterior))
         except (TypeError, ValueError):
-            exterior_shells.append(None)
-    for left_index, left in enumerate(polygons):
-        if left.is_empty or left.area <= 0:
-            continue
-        try:
-            left_point = left.representative_point()
-        except (TypeError, ValueError):
-            continue
-        for right_index, right_shell in enumerate(exterior_shells):
-            if left_index == right_index or right_shell is None:
-                continue
-            if right_shell.area <= left.area:
+            shells.append(None)
+
+    valid_shells = [
+        (index, shell)
+        for index, shell in enumerate(shells)
+        if shell is not None and not shell.is_empty and shell.area > 0
+    ]
+    contained_indices = set()
+    text_inside_indices = set()
+    if valid_shells:
+        tree = STRtree([shell for _, shell in valid_shells])
+        owner_by_position = [index for index, _ in valid_shells]
+
+        def shells_containing(point):
+            try:
+                positions = tree.query(point, predicate="within")
+            except (TypeError, ValueError):
+                return []
+            return [owner_by_position[int(position)] for position in positions]
+
+        if name_text_points is None:
+            name_text_points = [
+                point for _, _, point in _eligible_name_texts(drawing)
+            ]
+        for point in name_text_points:
+            text_inside_indices.update(shells_containing(point))
+        for index, polygon in enumerate(polygons):
+            if shells[index] is None or polygon.is_empty or polygon.area <= 0:
                 continue
             try:
-                if right_shell.contains(left_point):
-                    nested_indices.add(left_index)
-                    nested_indices.add(right_index)
+                representative = polygon.representative_point()
             except (TypeError, ValueError):
                 continue
+            for owner in shells_containing(representative):
+                if owner != index and shells[owner].area > shells[index].area:
+                    contained_indices.add(index)
+                    break
 
     candidates: List[Room] = []
     for polygon_index, polygon in enumerate(polygons):
         try:
-            if polygon_index in nested_indices or polygon.is_empty or not polygon.is_valid:
+            if polygon.is_empty or not polygon.is_valid:
                 continue
-            area_m2 = float(polygon.area) * area_factor
+            shell = shells[polygon_index]
+            if shell is None:
+                continue
+            if (
+                polygon_index in contained_indices
+                and polygon_index not in text_inside_indices
+            ):
+                continue
+            outer_area = float(shell.area)
+            hole_area = max(0.0, outer_area - float(polygon.area))
+            if outer_area > 0 and hole_area >= 0.5 * outer_area:
+                continue
+            area_m2 = outer_area * area_factor
             if not math.isfinite(area_m2) or area_m2 < threshold:
                 continue
-            boundary = [[float(x), float(y)] for x, y in list(polygon.exterior.coords)[:-1]]
+            boundary = [[float(x), float(y)] for x, y in list(shell.exterior.coords)[:-1]]
             source_ids = [
                 element_id
                 for element_id, line in line_records
-                if line.intersects(polygon.boundary)
+                if line.intersects(shell.boundary)
             ]
         except (TypeError, ValueError, OverflowError):
             continue
 
         if len(boundary) < 3:
             continue
+        properties = {
+            "source_element_ids": source_ids,
+            "candidate_type": "closed_linework",
+            "area_source_unit": unit,
+        }
+        hole_count = len(polygon.interiors)
+        if hole_count:
+            properties["hole_count"] = hole_count
+            properties["hole_area_m2"] = hole_area * area_factor
+            properties["net_area_m2"] = float(polygon.area) * area_factor
+            properties["area_meaning"] = "outer_ring_including_holes"
         candidates.append(
             Room(
                 room_id=f"ROOM_LINEWORK_{len(candidates) + 1:06d}",
@@ -310,11 +385,7 @@ def detect_linework_room_candidates(
                 boundary=boundary,
                 wall_type="unknown",
                 confidence=0.4,
-                properties={
-                    "source_element_ids": source_ids,
-                    "candidate_type": "closed_linework",
-                    "area_source_unit": unit,
-                },
+                properties=properties,
             )
         )
 
@@ -393,7 +464,12 @@ def detect_wall_pair_room_candidates(
     if not wall_lines:
         return []
     sub_drawing = replace(drawing, elements=wall_lines)
-    rooms = detect_linework_room_candidates(sub_drawing, min_area_m2=min_area_m2)
+    # 入れ子の内側候補を残すかの判定には、元の図面の室名テキストを使う
+    # (部分図面にはテキストが含まれないため)。
+    name_text_points = [point for _, _, point in _eligible_name_texts(drawing)]
+    rooms = detect_linework_room_candidates(
+        sub_drawing, min_area_m2=min_area_m2, name_text_points=name_text_points
+    )
     renamed = []
     for index, room in enumerate(rooms):
         properties = {**room.properties, "candidate_type": "wall_pair_linework"}
@@ -478,23 +554,7 @@ def associate_room_names(drawing: Drawing, rooms: List[Room]) -> List[Room]:
     Ambiguous cases remain unnamed. This is a first-pass geometric
     association, not semantic room-name recognition.
     """
-    text_records = []
-    for element in drawing.elements:
-        if not isinstance(element, TextElement):
-            continue
-        label = re.sub(r"\\P", " ", str(element.text or "")).strip()
-        label = re.sub(r"\s+", " ", label)
-        if not label or re.fullmatch(
-            r"[0-9０-９.,，．+＋−±×xX*/=()（）㎡mＭｍ²³\s-]+", label
-        ):
-            continue
-        try:
-            x, y = float(element.insertion_point[0]), float(element.insertion_point[1])
-        except (TypeError, ValueError, IndexError, OverflowError):
-            continue
-        if not (math.isfinite(x) and math.isfinite(y)):
-            continue
-        text_records.append((element, label, Point(x, y)))
+    text_records = _eligible_name_texts(drawing)
 
     room_polygons = []
     for room in rooms:

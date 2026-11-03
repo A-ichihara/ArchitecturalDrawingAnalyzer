@@ -192,10 +192,11 @@ def test_linework_detector_finds_two_adjacent_rooms_without_outer_duplicate():
     assert all(room.properties["candidate_type"] == "closed_linework" for room in rooms)
 
 
-def test_linework_detector_skips_nested_loops_with_ambiguous_hole_areas():
-    # A nested loop can represent wall thickness or a shaft rather than a
-    # separate room. Room.boundary cannot encode holes, so neither polygon
-    # should be emitted with an area that disagrees with its stored boundary.
+def test_linework_detector_keeps_holed_outer_room_and_drops_unnamed_inner():
+    # The outer polygon is kept with its exterior ring as the boundary and
+    # the exterior area as the room area; the hole is recorded in the
+    # properties. The unnamed inner loop (a symbol/shaft-like island) is
+    # not a room candidate.
     drawing = _drawing([
         _line("OUT_BOTTOM", [0, 0], [10000, 0]),
         _line("OUT_RIGHT", [10000, 0], [10000, 10000]),
@@ -206,7 +207,14 @@ def test_linework_detector_skips_nested_loops_with_ambiguous_hole_areas():
         _line("IN_TOP", [7000, 7000], [3000, 7000]),
         _line("IN_LEFT", [3000, 7000], [3000, 3000]),
     ])
-    assert detect_linework_room_candidates(drawing) == []
+    rooms = detect_linework_room_candidates(drawing)
+    assert len(rooms) == 1
+    room = rooms[0]
+    assert room.area_m2 == pytest.approx(100.0)
+    assert room.properties["hole_count"] == 1
+    assert room.properties["hole_area_m2"] == pytest.approx(16.0)
+    assert room.properties["net_area_m2"] == pytest.approx(84.0)
+    assert room.properties["area_meaning"] == "outer_ring_including_holes"
 
 
 def test_linework_detector_skips_malformed_and_zero_length_lines():
@@ -598,8 +606,13 @@ def test_linework_detector_preserves_adjacent_rooms_with_dangling_wall_lines():
     assert sorted(room.area_m2 for room in rooms) == pytest.approx([20.0, 20.0])
 
 
-def test_linework_detector_skips_nested_loops_even_with_interior_text():
-    """Text within a shaft-like nested loop must not turn it into a room."""
+def test_linework_detector_keeps_inner_loop_with_interior_text():
+    """An inner loop containing a name text is kept as a room candidate.
+
+    The text lies inside both the inner and the outer shell, so name
+    association stays ambiguous and neither room is named yet; the
+    candidates themselves are kept for review.
+    """
     drawing = _drawing([
         _line("OUT_BOTTOM", [0, 0], [10000, 0]),
         _line("OUT_RIGHT", [10000, 0], [10000, 10000]),
@@ -618,7 +631,9 @@ def test_linework_detector_skips_nested_loops_even_with_interior_text():
         ),
     ])
     rooms = detect_linework_room_candidates(drawing)
-    assert associate_room_names(drawing, rooms) == []
+    assert sorted(room.area_m2 for room in rooms) == pytest.approx([16.0, 100.0])
+    named = associate_room_names(drawing, rooms)
+    assert all(room.room_name == "" for room in named)
 
 
 def test_linework_detector_keeps_adjacent_rooms_with_text_on_shared_wall():
@@ -855,3 +870,75 @@ def test_room_name_association_normalizes_mtext_line_break_and_ignores_numeric_t
     assert len(rooms) == 1
     assert rooms[0].room_name == "機械室 空調機械"
     assert rooms[0].properties["room_name_source_element_id"] == "NAME"
+
+
+def test_linework_detector_judges_holed_room_by_outer_area():
+    # A booth whose only "hole" is a fixture symbol: the net area
+    # (1.08 - 0.09 = 0.99 m2) falls below the 1.0 m2 threshold, but the
+    # exterior area passes, so the room is kept with the hole recorded.
+    drawing = _drawing([
+        _line("OUT_BOTTOM", [0, 0], [1200, 0]),
+        _line("OUT_RIGHT", [1200, 0], [1200, 900]),
+        _line("OUT_TOP", [1200, 900], [0, 900]),
+        _line("OUT_LEFT", [0, 900], [0, 0]),
+        _line("SYM_BOTTOM", [400, 300], [700, 300]),
+        _line("SYM_RIGHT", [700, 300], [700, 600]),
+        _line("SYM_TOP", [700, 600], [400, 600]),
+        _line("SYM_LEFT", [400, 600], [400, 300]),
+    ])
+    rooms = detect_linework_room_candidates(drawing)
+    assert len(rooms) == 1
+    room = rooms[0]
+    assert room.area_m2 == pytest.approx(1.08)
+    assert room.properties["hole_count"] == 1
+    assert room.properties["hole_area_m2"] == pytest.approx(0.09)
+    assert room.properties["net_area_m2"] == pytest.approx(0.99)
+
+
+def test_linework_detector_uses_supplied_name_text_points_for_inner_loop():
+    # The wall-pair path detects rooms from a text-less sub-drawing and
+    # passes the original drawing's name text points explicitly.
+    from shapely.geometry import Point
+
+    drawing = _drawing([
+        _line("OUT_BOTTOM", [0, 0], [10000, 0]),
+        _line("OUT_RIGHT", [10000, 0], [10000, 10000]),
+        _line("OUT_TOP", [10000, 10000], [0, 10000]),
+        _line("OUT_LEFT", [0, 10000], [0, 0]),
+        _line("IN_BOTTOM", [3000, 3000], [7000, 3000]),
+        _line("IN_RIGHT", [7000, 3000], [7000, 7000]),
+        _line("IN_TOP", [7000, 7000], [3000, 7000]),
+        _line("IN_LEFT", [3000, 7000], [3000, 3000]),
+    ])
+    rooms = detect_linework_room_candidates(
+        drawing, name_text_points=[Point(5000, 5000)]
+    )
+    assert sorted(room.area_m2 for room in rooms) == pytest.approx([16.0, 100.0])
+
+
+def test_room_name_text_inside_a_hole_still_names_the_room():
+    # On real drawings a room label can sit inside a fixture symbol that
+    # forms a hole of the room polygon. Association works on the exterior
+    # shell, so the label still names the room.
+    drawing = _drawing([
+        _line("OUT_BOTTOM", [0, 0], [5000, 0]),
+        _line("OUT_RIGHT", [5000, 0], [5000, 4000]),
+        _line("OUT_TOP", [5000, 4000], [0, 4000]),
+        _line("OUT_LEFT", [0, 4000], [0, 0]),
+        _line("SYM_BOTTOM", [2000, 1500], [2300, 1500]),
+        _line("SYM_RIGHT", [2300, 1500], [2300, 1800]),
+        _line("SYM_TOP", [2300, 1800], [2000, 1800]),
+        _line("SYM_LEFT", [2000, 1800], [2000, 1500]),
+        TextElement(
+            element_id="LABEL",
+            element_type="TEXT",
+            layer="ROOM_LABELS",
+            text="便所",
+            insertion_point=[2150, 1650],
+        ),
+    ])
+    rooms = associate_room_names(drawing, detect_linework_room_candidates(drawing))
+    assert len(rooms) == 1
+    assert rooms[0].room_name == "便所"
+    assert rooms[0].area_m2 == pytest.approx(20.0)
+    assert rooms[0].properties["hole_count"] == 1
