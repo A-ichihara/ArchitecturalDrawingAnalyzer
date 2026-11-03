@@ -942,3 +942,88 @@ def test_room_name_text_inside_a_hole_still_names_the_room():
     assert rooms[0].room_name == "便所"
     assert rooms[0].area_m2 == pytest.approx(20.0)
     assert rooms[0].properties["hole_count"] == 1
+
+
+def test_room_name_association_prioritizes_name_like_text_over_code():
+    # A room containing a room name and a short code (a corridor with
+    # "DN") is named by the name-like text; the code is kept as an
+    # auxiliary text for review.
+    drawing = _drawing([
+        _polyline("ROOM", [[0, 0], [10000, 0], [10000, 3000], [0, 3000]]),
+        _text("NAME", "屋外廊下", [3000, 1500]),
+        _text("CODE", "DN", [7000, 1500]),
+    ])
+    rooms = detect_closed_polyline_room_candidates(drawing)
+    associated = associate_room_names(drawing, rooms)
+    assert associated[0].room_name == "屋外廊下"
+    assert (
+        associated[0].properties["room_name_association"]
+        == "name_like_text_prioritized"
+    )
+    assert associated[0].properties["auxiliary_texts"] == ["DN"]
+
+
+def test_room_name_association_records_unresolved_texts():
+    # Two name-like labels cannot be decided; the room stays unnamed and
+    # both labels are recorded for review.
+    drawing = _drawing([
+        _polyline("ROOM", [[0, 0], [5000, 0], [5000, 4000], [0, 4000]]),
+        _text("LABEL1", "事務室", [2000, 2000]),
+        _text("LABEL2", "管理室", [3000, 2000]),
+        _text("CODE", "PS", [2500, 3000]),
+    ])
+    rooms = detect_closed_polyline_room_candidates(drawing)
+    associated = associate_room_names(drawing, rooms)
+    assert associated[0].room_name == ""
+    assert sorted(associated[0].properties["unresolved_name_texts"]) == [
+        "PS",
+        "事務室",
+        "管理室",
+    ]
+
+
+def _room(room_id, boundary, area_m2):
+    return Room(
+        room_id=room_id,
+        room_name="",
+        area_m2=area_m2,
+        boundary=boundary,
+        wall_type="unknown",
+        confidence=0.4,
+        properties={"candidate_type": "closed_linework"},
+    )
+
+
+def test_room_name_association_assigns_texts_inside_a_blob_candidate():
+    # A large over-merged candidate contains two smaller labeled rooms.
+    # Each name-like label goes to its smallest containing candidate.
+    big = _room("BIG", [[0, 0], [30000, 0], [30000, 20000], [0, 20000]], 600.0)
+    inner_a = _room("A", [[2000, 2000], [6000, 2000], [6000, 5000], [2000, 5000]], 12.0)
+    inner_b = _room("B", [[10000, 2000], [14000, 2000], [14000, 5000], [10000, 5000]], 12.0)
+    drawing = _drawing([
+        _text("LABEL_A", "事務室", [4000, 3500]),
+        _text("LABEL_B", "会議室", [12000, 3500]),
+    ])
+    associated = associate_room_names(drawing, [big, inner_a, inner_b])
+    by_id = {room.room_id: room for room in associated}
+    assert by_id["A"].room_name == "事務室"
+    assert (
+        by_id["A"].properties["room_name_association"]
+        == "smallest_containing_candidate"
+    )
+    assert by_id["B"].room_name == "会議室"
+    assert by_id["BIG"].room_name == ""
+
+
+def test_room_name_association_ignores_digit_texts_inside_a_blob_candidate():
+    # Labels containing digits (drawing notes, numbered names) are not
+    # treated as name-like, so the blob rule does not fire for them.
+    big = _room("BIG", [[0, 0], [30000, 0], [30000, 20000], [0, 20000]], 600.0)
+    inner_a = _room("A", [[2000, 2000], [6000, 2000], [6000, 5000], [2000, 5000]], 12.0)
+    inner_b = _room("B", [[10000, 2000], [14000, 2000], [14000, 5000], [10000, 5000]], 12.0)
+    drawing = _drawing([
+        _text("LABEL_A", "第3会議室", [4000, 3500]),
+        _text("LABEL_B", "第4会議室", [12000, 3500]),
+    ])
+    associated = associate_room_names(drawing, [big, inner_a, inner_b])
+    assert all(room.room_name == "" for room in associated)
